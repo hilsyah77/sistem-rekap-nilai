@@ -326,6 +326,7 @@ export function App() {
         )
 
       case "walikelas-rekap":
+      case "admin-rekap":
         return (
           <RekapCetakPage
             currentUser={currentUser}

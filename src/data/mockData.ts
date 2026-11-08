@@ -57,6 +57,12 @@ export const ADMIN_NAV_ITEMS = [
     icon: 'CheckCircle2',
     description: 'Antrean persetujuan & catatan revisi',
   },
+  {
+    id: 'admin-rekap',
+    title: 'Rekap & Cetak Raport',
+    icon: 'Printer',
+    description: 'Cetak lembar raport, leger & transkrip kelulusan',
+  },
 ]
 
 export const WALIKELAS_NAV_ITEMS = [
