@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
+import * as XLSX from "xlsx"
 import {
   Users,
   School,
@@ -10,6 +11,7 @@ import {
   Check,
   GraduationCap,
   Upload,
+  Download,
   FileSpreadsheet,
   ArrowRightLeft,
   ChevronRight,
@@ -139,6 +141,10 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
   // Modals state
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false)
   const [csvPasteText, setCsvPasteText] = useState("")
+  const [importFileState, setImportFileState] = useState<{ name: string; rows: StudentItem[] } | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [isDraggingFile, setIsDraggingFile] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [isAddStudentModalOpen, setIsAddStudentModalOpen] = useState(false)
   const [isMoveClassModalOpen, setIsMoveClassModalOpen] = useState(false)
   const [selectedStudentForMove, setSelectedStudentForMove] = useState<StudentItem | null>(null)
@@ -570,6 +576,185 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
   const handleDeleteStudent = (id: string) => {
     if (!window.confirm("Hapus data siswa ini?")) return
     onChangeStudents(prev => prev.filter(s => s.id !== id))
+  }
+
+  const handleDownloadTemplateXlsx = () => {
+    const defaultRoom =
+      selectedClassId !== "all" && currentClass ? currentClass.name : classes[0]?.name || "Kelas IX-A"
+    const rows = [
+      ["NISN", "NIS", "Nama", "Gender", "Rombel", "No HP"],
+      ["0089123401", "212209001", "Ahmad Fauzan", "L", defaultRoom, "081234567890"],
+      ["0089123402", "212209002", "Siti Aminah", "P", defaultRoom, "081234567891"],
+    ]
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+    ws["!cols"] = [{ wch: 15 }, { wch: 14 }, { wch: 28 }, { wch: 10 }, { wch: 16 }, { wch: 16 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, "Template Siswa")
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" })
+    const blob = new Blob([out], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = "Template_Import_Siswa.xlsx"
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    setUploadSuccessToast("Template Excel (Template_Import_Siswa.xlsx) berhasil diunduh.")
+    setTimeout(() => setUploadSuccessToast(null), 4000)
+  }
+
+  const handleParseUploadFile = (file: File) => {
+    setImportError(null)
+    if (file.size > 10 * 1024 * 1024) {
+      setImportError("Ukuran file melebihi batas maksimal 10 MB.")
+      return
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase()
+    if (!["xlsx", "xls", "csv"].includes(ext)) {
+      setImportError("Format file tidak didukung. Gunakan .xlsx, .xls, atau .csv.")
+      return
+    }
+    const defaultRoom =
+      selectedClassId !== "all" && currentClass ? currentClass.name : classes[0]?.name || "Kelas IX-A"
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const data = new Uint8Array(ev.target?.result as ArrayBuffer)
+        const wb = XLSX.read(data, { type: "array" })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const rawRows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "" })
+        const nonEmpty = rawRows.filter(
+          (r) => Array.isArray(r) && r.some((cell) => String(cell ?? "").trim() !== "")
+        )
+        if (nonEmpty.length === 0) {
+          setImportError("File kosong atau tidak berisi data siswa.")
+          setImportFileState(null)
+          return
+        }
+        const first = nonEmpty[0].map((x) => String(x ?? "").trim().toLowerCase())
+        const hasHeader = first.some(
+          (h) => h.includes("nama") || h.includes("nisn") || h.includes("rombel") || h.includes("kelas")
+        )
+        let idxNisn = -1,
+          idxNis = -1,
+          idxNama = -1,
+          idxGender = -1,
+          idxRombel = -1,
+          idxPhone = -1
+        if (hasHeader) {
+          first.forEach((h, i) => {
+            if (idxNisn < 0 && h.includes("nisn")) idxNisn = i
+            else if (idxNis < 0 && (h === "nis" || h.includes("nis lokal"))) idxNis = i
+            else if (idxNama < 0 && h.includes("nama")) idxNama = i
+            else if (idxGender < 0 && (h.includes("gender") || h.includes("kelamin") || h === "l/p" || h === "jk"))
+              idxGender = i
+            else if (idxRombel < 0 && (h.includes("rombel") || h.includes("kelas"))) idxRombel = i
+            else if (idxPhone < 0 && (h.includes("hp") || h.includes("wa") || h.includes("telp") || h.includes("kontak")))
+              idxPhone = i
+          })
+        }
+        const dataRows = hasHeader ? nonEmpty.slice(1) : nonEmpty
+        const parsed: StudentItem[] = []
+        dataRows.forEach((r, idx) => {
+          const cells = r.map((x) => String(x ?? "").trim())
+          let nisn = "-",
+            nis = "-",
+            name = "",
+            genderRaw = "L",
+            room = defaultRoom,
+            phone = "-"
+          if (hasHeader && idxNama >= 0) {
+            nisn = idxNisn >= 0 ? cells[idxNisn] || "-" : "-"
+            nis = idxNis >= 0 ? cells[idxNis] || "-" : "-"
+            name = cells[idxNama] || ""
+            genderRaw = idxGender >= 0 ? cells[idxGender] || "L" : "L"
+            room = idxRombel >= 0 ? cells[idxRombel] || defaultRoom : defaultRoom
+            phone = idxPhone >= 0 ? cells[idxPhone] || "-" : "-"
+          } else if (cells.length >= 5) {
+            nisn = cells[0] || "-"
+            nis = cells[1] || "-"
+            name = cells[2] || ""
+            genderRaw = cells[3] || "L"
+            room = cells[4] || defaultRoom
+            phone = cells[5] || "-"
+          } else if (cells.length === 4) {
+            nisn = cells[0] || "-"
+            name = cells[1] || ""
+            genderRaw = cells[2] || "L"
+            room = cells[3] || defaultRoom
+          } else if (cells.length >= 2) {
+            nisn = cells[0] || "-"
+            name = cells[1] || ""
+            genderRaw = cells[2] || "L"
+          } else {
+            name = cells[0] || ""
+          }
+          if (!name) return
+          const gUp = genderRaw.toUpperCase()
+          const gender: "L" | "P" = gUp === "P" || gUp.startsWith("PEREMPUAN") || gUp === "W" || gUp === "F" ? "P" : "L"
+          if (selectedClassId !== "all" && currentClass && (!hasHeader || idxRombel < 0 || !cells[idxRombel])) {
+            room = currentClass.name
+          }
+          parsed.push({
+            id: `std-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+            nisn,
+            nis,
+            name,
+            gender,
+            classRoom: room,
+            grade: "IX",
+            status: "Aktif",
+            phone,
+          })
+        })
+        if (parsed.length === 0) {
+          setImportError("Tidak ada baris siswa yang valid ditemukan di file ini.")
+          setImportFileState(null)
+          return
+        }
+        setImportFileState({ name: file.name, rows: parsed })
+      } catch (err) {
+        setImportError(`Gagal membaca file Excel: ${err instanceof Error ? err.message : String(err)}`)
+        setImportFileState(null)
+      }
+    }
+    reader.readAsArrayBuffer(file)
+  }
+
+  const handleConfirmImportFile = () => {
+    if (!importFileState || importFileState.rows.length === 0) return
+    const existingNames = new Set(classes.map((c) => c.name))
+    const newRooms = new Set<string>()
+    importFileState.rows.forEach((s) => {
+      if (s.classRoom && !existingNames.has(s.classRoom)) newRooms.add(s.classRoom)
+    })
+    if (newRooms.size > 0) {
+      onChangeClasses((prev) => [
+        ...prev,
+        ...Array.from(newRooms).map((roomName) => ({
+          id: `cls-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          name: roomName,
+          grade: "IX" as const,
+          walikelas: "Belum Ditentukan",
+          walikelasNip: "-",
+          capacity: 32,
+          totalStudents: 0,
+          maleCount: 0,
+          femaleCount: 0,
+        })),
+      ])
+    }
+    onChangeStudents((prev) => [...prev, ...importFileState.rows])
+    const count = importFileState.rows.length
+    const fname = importFileState.name
+    setImportFileState(null)
+    setImportError(null)
+    setIsUploadModalOpen(false)
+    setUploadSuccessToast(`Berhasil mengimpor ${count} data siswa baru dari ${fname}.`)
+    setTimeout(() => setUploadSuccessToast(null), 4500)
   }
 
   const handleProcessImportCsv = () => {
@@ -1613,40 +1798,126 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
       </Dialog>
 
       {/* ============================================================== */}
-      {/* MODAL 2: IMPORT DATA SISWA (CSV / PASTE EXCEL)                 */}
+      {/* MODAL 2: IMPORT DATA SISWA (EXCEL .XLSX / .XLS / .CSV)         */}
       {/* ============================================================== */}
-      <Dialog open={isUploadModalOpen} onOpenChange={setIsUploadModalOpen}>
+      <Dialog
+        open={isUploadModalOpen}
+        onOpenChange={(open) => {
+          setIsUploadModalOpen(open)
+          if (!open) {
+            setImportFileState(null)
+            setImportError(null)
+            setIsDraggingFile(false)
+          }
+        }}
+      >
         <DialogHeader>
           <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-800 flex items-center justify-center mb-2">
             <Upload className="w-6 h-6" />
           </div>
-          <DialogTitle>Import Data Siswa (Excel / CSV)</DialogTitle>
+          <DialogTitle>Upload / Import Data Siswa</DialogTitle>
           <DialogDescription className="text-xs text-slate-500 mt-1">
-            Tempel (paste) baris data siswa dari Excel atau CSV dengan urutan kolom: <strong>NISN, NIS, Nama Lengkap, L/P, Nama Kelas</strong>.
+            Unggah data siswa secara massal menggunakan file Excel (.xlsx / .xls / .csv) atau tempel baris CSV.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3 py-2 text-xs">
-          <textarea
-            rows={6}
-            value={csvPasteText}
-            onChange={(e) => setCsvPasteText(e.target.value)}
-            placeholder={`Contoh format per baris:\n0089123401, 212209001, Ahmad Fauzan, L, Kelas IX-A\n0089123402, 212209002, Siti Aminah, P, Kelas IX-A`}
-            className="w-full p-3 rounded-xl border border-slate-300 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
-          />
+        <div className="space-y-4 py-2 text-xs">
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={(e) => {
+              e.preventDefault()
+              setIsDraggingFile(true)
+            }}
+            onDragLeave={() => setIsDraggingFile(false)}
+            onDrop={(e) => {
+              e.preventDefault()
+              setIsDraggingFile(false)
+              const f = e.dataTransfer.files?.[0]
+              if (f) handleParseUploadFile(f)
+            }}
+            className={cn(
+              "border-2 border-dashed rounded-2xl p-6 text-center transition-all cursor-pointer",
+              isDraggingFile
+                ? "border-emerald-600 bg-emerald-50/60"
+                : "border-slate-300 hover:border-emerald-500 bg-slate-50/50 hover:bg-emerald-50/30"
+            )}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) handleParseUploadFile(f)
+                e.target.value = ""
+              }}
+            />
+            <FileSpreadsheet className="w-10 h-10 text-emerald-600 mx-auto mb-2" />
+            <p className="font-bold text-slate-800 text-sm">
+              Klik untuk memilih file Excel atau seret file ke sini
+            </p>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Mendukung format: <strong>.XLSX, .XLS, .CSV</strong> (Maksimal 10 MB)
+            </p>
+            {importFileState && (
+              <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-900 font-semibold text-[11px]">
+                <Check className="w-3.5 h-3.5" />
+                File Siap: {importFileState.name} ({importFileState.rows.length} Siswa Terdeteksi)
+              </div>
+            )}
+            {importError && (
+              <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-100 text-red-800 font-semibold text-[11px]">
+                {importError}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-blue-50 border border-blue-200 text-blue-900">
+            <div className="flex items-center gap-2">
+              <Download className="w-4 h-4 text-blue-600 shrink-0" />
+              <div>
+                <p className="font-semibold text-xs">Belum punya format tabel?</p>
+                <p className="text-[10px] text-blue-700">
+                  Unduh format template resmi dengan kolom NISN, NIS, Nama, Gender, dan Rombel.
+                </p>
+              </div>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={handleDownloadTemplateXlsx}
+              className="text-xs bg-white text-blue-800 border-blue-300 hover:bg-blue-100 shrink-0"
+            >
+              Download Template (.xlsx)
+            </Button>
+          </div>
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => setIsUploadModalOpen(false)} className="text-xs">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setImportFileState(null)
+              setImportError(null)
+              setIsUploadModalOpen(false)
+            }}
+            className="text-xs"
+          >
             Batal
           </Button>
           <Button
-            onClick={handleProcessImportCsv}
-            disabled={!csvPasteText.trim()}
+            type="button"
+            onClick={importFileState ? handleConfirmImportFile : handleProcessImportCsv}
+            disabled={!importFileState && !csvPasteText.trim()}
             className="text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5"
           >
             <Upload className="w-3.5 h-3.5" />
-            Proses & Import Siswa
+            {importFileState
+              ? `Proses & Import ${importFileState.rows.length} Siswa`
+              : "Pilih File Terlebih Dahulu"}
           </Button>
         </DialogFooter>
       </Dialog>
