@@ -33,9 +33,11 @@ export const WalikelasDashboard: React.FC<WalikelasDashboardProps> = ({
   validationItem,
 }) => {
   const assignedClass = currentUser.assignedClass || "Kelas IX-A"
-  const classStudents = students.filter(s => s.classRoom === assignedClass)
-  const maleCount = classStudents.filter(s => s.gender === 'L').length
-  const femaleCount = classStudents.filter(s => s.gender === 'P').length
+  const classStudents = students.filter(
+    s => (s.classRoom || "").trim().toLowerCase() === assignedClass.trim().toLowerCase()
+  )
+  const maleCount = classStudents.filter(s => (s.gender || "").toUpperCase() === 'L').length
+  const femaleCount = classStudents.filter(s => (s.gender || "").toUpperCase() === 'P').length
 
   const currentStatus = validationItem?.status || "draft"
   const revisiNote = validationItem?.revisionNotes || ""
