@@ -35,9 +35,25 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
   queue: externalQueue,
   onChangeQueue,
 }) => {
-  const [internalQueue, setInternalQueue] = useState<ClassValidationItem[]>(MOCK_VALIDATION_QUEUE)
+  const [internalQueue, setInternalQueue] = useState<ClassValidationItem[]>(() => {
+    try {
+      const saved = localStorage.getItem("sisforekap_v2_validations")
+      return saved ? JSON.parse(saved) : MOCK_VALIDATION_QUEUE
+    } catch {
+      return MOCK_VALIDATION_QUEUE
+    }
+  })
+  const persistInternalQueue: React.Dispatch<React.SetStateAction<ClassValidationItem[]>> = (updater) => {
+    setInternalQueue((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater
+      try {
+        localStorage.setItem("sisforekap_v2_validations", JSON.stringify(next))
+      } catch {}
+      return next
+    })
+  }
   const queue = externalQueue ?? internalQueue
-  const setQueue = onChangeQueue ?? setInternalQueue
+  const setQueue = onChangeQueue ?? persistInternalQueue
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
 

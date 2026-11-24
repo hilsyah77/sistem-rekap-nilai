@@ -22,45 +22,86 @@ const DB_CONFIG = {
 app.use(cors())
 app.use(express.json({ limit: "25mb" }))
 
+// Pastikan semua response API tidak pernah di-cache oleh browser/proxy
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+  res.setHeader("Pragma", "no-cache")
+  res.setHeader("Expires", "0")
+  next()
+})
+
 let pool = null
+let initPromise = null
+
+// Antrean tulis berurutan per key agar tidak terjadi race condition / deadlock MySQL
+const keyWriteQueues = new Map()
+function enqueueKeyWrite(key, taskFn) {
+  const prev = keyWriteQueues.get(key) || Promise.resolve()
+  const next = prev.then(taskFn, taskFn)
+  keyWriteQueues.set(
+    key,
+    next.catch(() => {})
+  )
+  return next
+}
 
 async function initDatabase() {
-  try {
-    // 1. Buat database terlebih dahulu jika belum ada
-    const rootConn = await mysql.createConnection({
-      host: DB_CONFIG.host,
-      port: DB_CONFIG.port,
-      user: DB_CONFIG.user,
-      password: DB_CONFIG.password,
-      multipleStatements: true,
-    })
+  if (initPromise) return initPromise
+  initPromise = (async () => {
+    try {
+      // 1. Coba buat database jika user punya hak akses (opsional/non-fatal bila DB sudah dibuat)
+      try {
+        const rootConn = await mysql.createConnection({
+          host: DB_CONFIG.host,
+          port: DB_CONFIG.port,
+          user: DB_CONFIG.user,
+          password: DB_CONFIG.password,
+          multipleStatements: true,
+        })
+        await rootConn.query(
+          `CREATE DATABASE IF NOT EXISTS \`${DB_CONFIG.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
+        )
+        await rootConn.end()
+      } catch (createErr) {
+        console.warn("[Database] Lewati CREATE DATABASE (lanjut koneksi langsung):", createErr.message)
+      }
 
-    await rootConn.query(
-      `CREATE DATABASE IF NOT EXISTS \`${DB_CONFIG.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
-    )
-    await rootConn.end()
+      // 2. Buat connection pool ke database
+      const nextPool = mysql.createPool({
+        ...DB_CONFIG,
+        multipleStatements: true,
+      })
 
-    // 2. Buat connection pool ke database
-    pool = mysql.createPool({
-      ...DB_CONFIG,
-      multipleStatements: true,
-    })
+      // Uji koneksi terlebih dahulu
+      await nextPool.query("SELECT 1")
 
-    // 3. Jalankan schema.sql untuk memastikan semua tabel siap
-    const schemaPath = path.join(__dirname, "..", "database", "schema.sql")
-    if (fs.existsSync(schemaPath)) {
-      const rawSchema = fs.readFileSync(schemaPath, "utf8")
-      // Hilangkan baris CREATE DATABASE / USE agar aman dijalankan di DB yang dipilih
-      const cleanedSchema = rawSchema
-        .replace(/CREATE DATABASE[\s\S]*?;/gi, "")
-        .replace(/USE\s+\w+\s*;/gi, "")
-      await pool.query(cleanedSchema)
+      // 3. Jalankan schema.sql untuk memastikan semua tabel siap
+      const schemaPath = path.join(__dirname, "..", "database", "schema.sql")
+      if (fs.existsSync(schemaPath)) {
+        const rawSchema = fs.readFileSync(schemaPath, "utf8")
+        // Hilangkan baris CREATE DATABASE / USE agar aman dijalankan di DB yang dipilih
+        const cleanedSchema = rawSchema
+          .replace(/CREATE DATABASE[\s\S]*?;/gi, "")
+          .replace(/USE\s+\w+\s*;/gi, "")
+        await nextPool.query(cleanedSchema)
+      }
+
+      pool = nextPool
+      console.log(`[Database] Terhubung ke MySQL (${DB_CONFIG.host}:${DB_CONFIG.port}/${DB_CONFIG.database})`)
+    } catch (err) {
+      pool = null
+      console.error("[Database] Gagal menginisialisasi MySQL:", err.message)
+    } finally {
+      initPromise = null
     }
+  })()
+  return initPromise
+}
 
-    console.log(`[Database] Terhubung ke MySQL (${DB_CONFIG.host}:${DB_CONFIG.port}/${DB_CONFIG.database})`)
-  } catch (err) {
-    console.error("[Database] Gagal menginisialisasi MySQL:", err.message)
-  }
+async function ensurePool() {
+  if (pool) return pool
+  await initDatabase()
+  return pool
 }
 
 /**
@@ -196,12 +237,12 @@ async function syncRelationalTables(key, rawValue) {
             Number(v.completeness || 0),
             Number(v.averageScore || 0),
             String(v.status || "menunggu_validasi"),
-            v.revisionNote ? String(v.revisionNote) : null,
+            v.revisionNotes || v.revisionNote ? String(v.revisionNotes || v.revisionNote) : null,
           ]
         )
       }
     } else if (key === "sisforekap_v2_scores" && parsed && typeof parsed === "object") {
-      await conn.query("DELETE FROM student_scores")
+      const rowsToInsert = []
       for (const [semesterId, studentsMap] of Object.entries(parsed)) {
         if (!studentsMap || typeof studentsMap !== "object") continue
         for (const [studentId, subjectsMap] of Object.entries(studentsMap)) {
@@ -210,13 +251,21 @@ async function syncRelationalTables(key, rawValue) {
             if (scoreVal === "" || scoreVal === null || scoreVal === undefined) continue
             const numScore = Number(scoreVal)
             if (Number.isNaN(numScore)) continue
-            await conn.query(
-              `INSERT INTO student_scores (semester_id, student_id, subject_id, score)
-               VALUES (?, ?, ?, ?)`,
-              [String(semesterId), String(studentId), String(subjectId), numScore]
-            )
+            rowsToInsert.push([String(semesterId), String(studentId), String(subjectId), numScore])
           }
         }
+      }
+
+      await conn.query("DELETE FROM student_scores")
+      const BATCH_SIZE = 200
+      for (let i = 0; i < rowsToInsert.length; i += BATCH_SIZE) {
+        const batch = rowsToInsert.slice(i, i + BATCH_SIZE)
+        await conn.query(
+          `INSERT INTO student_scores (semester_id, student_id, subject_id, score)
+           VALUES ?
+           ON DUPLICATE KEY UPDATE score = VALUES(score)`,
+          [batch]
+        )
       }
     }
 
@@ -235,8 +284,9 @@ async function syncRelationalTables(key, rawValue) {
 
 app.get("/api/health", async (_req, res) => {
   try {
-    if (!pool) throw new Error("Database pool belum siap")
-    await pool.query("SELECT 1")
+    const db = await ensurePool()
+    if (!db) throw new Error("Database pool belum siap")
+    await db.query("SELECT 1")
     res.json({ ok: true, status: "connected", database: DB_CONFIG.database })
   } catch (err) {
     res.status(500).json({ ok: false, status: "disconnected", error: err.message })
@@ -246,10 +296,12 @@ app.get("/api/health", async (_req, res) => {
 // Ambil seluruh state aplikasi dari database MySQL
 app.get("/api/state", async (_req, res) => {
   try {
-    if (!pool) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
-    const [rows] = await pool.query("SELECT store_key, store_value, updated_at FROM app_store")
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+    const [rows] = await db.query("SELECT store_key, store_value, updated_at FROM app_store")
     const state = {}
     for (const row of rows) {
+      if (row.store_key === "sisforekap_session_user") continue
       state[row.store_key] = row.store_value
     }
     res.json({ ok: true, state })
@@ -258,22 +310,185 @@ app.get("/api/state", async (_req, res) => {
   }
 })
 
+// Simpan perubahan nilai secara inkremental (aman untuk banyak perangkat bersamaan)
+app.patch("/api/scores", async (req, res) => {
+  try {
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+
+    const changes = Array.isArray(req.body?.changes) ? req.body.changes : []
+    if (changes.length === 0) {
+      return res.json({ ok: true, updated: 0 })
+    }
+
+    const updatedCount = await enqueueKeyWrite("sisforekap_v2_scores", async () => {
+      const conn = await db.getConnection()
+      try {
+        await conn.beginTransaction()
+
+        // 1. Ambil JSON nilai terakhir dari app_store (lock row agar konsisten)
+        const [rows] = await conn.query(
+          "SELECT store_value FROM app_store WHERE store_key = 'sisforekap_v2_scores' FOR UPDATE"
+        )
+        let currentScores = {}
+        if (rows.length > 0 && rows[0].store_value) {
+          try {
+            const parsed = JSON.parse(rows[0].store_value)
+            if (parsed && typeof parsed === "object") currentScores = parsed
+          } catch {}
+        }
+
+        const upserts = []
+        const deletes = []
+
+        for (const ch of changes) {
+          if (!ch || !ch.semesterId || !ch.studentId || !ch.subjectId) continue
+          const semId = String(ch.semesterId)
+          const stdId = String(ch.studentId)
+          const subId = String(ch.subjectId)
+          const val = ch.value
+
+          if (!currentScores[semId] || typeof currentScores[semId] !== "object") {
+            currentScores[semId] = {}
+          }
+          if (!currentScores[semId][stdId] || typeof currentScores[semId][stdId] !== "object") {
+            currentScores[semId][stdId] = {}
+          }
+
+          if (val === "" || val === null || val === undefined) {
+            currentScores[semId][stdId][subId] = ""
+            deletes.push([semId, stdId, subId])
+          } else {
+            const numScore = Number(val)
+            if (!Number.isNaN(numScore)) {
+              currentScores[semId][stdId][subId] = numScore
+              upserts.push([semId, stdId, subId, numScore])
+            }
+          }
+        }
+
+        // 2. Simpan JSON hasil merge ke app_store
+        await conn.query(
+          `INSERT INTO app_store (store_key, store_value)
+           VALUES ('sisforekap_v2_scores', ?)
+           ON DUPLICATE KEY UPDATE store_value = VALUES(store_value)`,
+          [JSON.stringify(currentScores)]
+        )
+
+        // 3. Upsert & delete hanya baris yang berubah di tabel relasional student_scores
+        if (upserts.length > 0) {
+          await conn.query(
+            `INSERT INTO student_scores (semester_id, student_id, subject_id, score)
+             VALUES ?
+             ON DUPLICATE KEY UPDATE score = VALUES(score)`,
+            [upserts]
+          )
+        }
+        for (const [semId, stdId, subId] of deletes) {
+          await conn.query(
+            `DELETE FROM student_scores WHERE semester_id = ? AND student_id = ? AND subject_id = ?`,
+            [semId, stdId, subId]
+          )
+        }
+
+        await conn.commit()
+        return upserts.length + deletes.length
+      } catch (err) {
+        await conn.rollback()
+        throw err
+      } finally {
+        conn.release()
+      }
+    })
+
+    res.json({ ok: true, updated: updatedCount })
+  } catch (err) {
+    console.error("[Database] Gagal PATCH /api/scores:", err.message)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
 // Simpan satu key state aplikasi ke MySQL
 app.put("/api/state/:key", async (req, res) => {
   try {
-    if (!pool) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
     const { key } = req.params
+    if (key === "sisforekap_session_user") {
+      return res.json({ ok: true, key, skipped: true })
+    }
     const rawValue =
       typeof req.body.value === "string" ? req.body.value : JSON.stringify(req.body.value ?? "")
 
-    await pool.query(
-      `INSERT INTO app_store (store_key, store_value)
-       VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE store_value = VALUES(store_value)`,
-      [key, rawValue]
-    )
+    await enqueueKeyWrite(key, async () => {
+      let valueToSave = rawValue
 
-    await syncRelationalTables(key, rawValue)
+      // Untuk sisforekap_v2_scores, gabungkan dengan data server agar tidak menimpa nilai perangkat lain
+      if (key === "sisforekap_v2_scores") {
+        try {
+          const incoming = JSON.parse(rawValue)
+          if (incoming && typeof incoming === "object") {
+            const [rows] = await db.query(
+              "SELECT store_value FROM app_store WHERE store_key = 'sisforekap_v2_scores'"
+            )
+            let merged = {}
+            if (rows.length > 0 && rows[0].store_value) {
+              try {
+                const existing = JSON.parse(rows[0].store_value)
+                if (existing && typeof existing === "object") merged = existing
+              } catch {}
+            }
+            for (const [semId, studentsMap] of Object.entries(incoming)) {
+              if (!studentsMap || typeof studentsMap !== "object") continue
+              if (!merged[semId] || typeof merged[semId] !== "object") merged[semId] = {}
+              for (const [stdId, subjectsMap] of Object.entries(studentsMap)) {
+                if (!subjectsMap || typeof subjectsMap !== "object") continue
+                merged[semId][stdId] = {
+                  ...(merged[semId][stdId] || {}),
+                  ...subjectsMap,
+                }
+              }
+            }
+            valueToSave = JSON.stringify(merged)
+          }
+        } catch {}
+      } else if (key === "sisforekap_v2_validations") {
+        // Gabungkan antrean validasi per className agar pengajuan wali kelas dari perangkat lain tidak saling menimpa
+        try {
+          const incoming = JSON.parse(rawValue)
+          if (Array.isArray(incoming)) {
+            const [rows] = await db.query(
+              "SELECT store_value FROM app_store WHERE store_key = 'sisforekap_v2_validations'"
+            )
+            let existing = []
+            if (rows.length > 0 && rows[0].store_value) {
+              try {
+                const parsedExisting = JSON.parse(rows[0].store_value)
+                if (Array.isArray(parsedExisting)) existing = parsedExisting
+              } catch {}
+            }
+            const byClass = new Map()
+            for (const item of existing) {
+              if (item && item.className) byClass.set(item.className, item)
+            }
+            for (const item of incoming) {
+              if (item && item.className) byClass.set(item.className, item)
+            }
+            valueToSave = JSON.stringify(Array.from(byClass.values()))
+          }
+        } catch {}
+      }
+
+      await db.query(
+        `INSERT INTO app_store (store_key, store_value)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE store_value = VALUES(store_value)`,
+        [key, valueToSave]
+      )
+
+      await syncRelationalTables(key, valueToSave)
+    })
+
     res.json({ ok: true, key })
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
@@ -283,17 +498,21 @@ app.put("/api/state/:key", async (req, res) => {
 // Simpan banyak key sekaligus (batch sync)
 app.post("/api/state", async (req, res) => {
   try {
-    if (!pool) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
     const entries = req.body?.state || {}
     for (const [key, val] of Object.entries(entries)) {
+      if (key === "sisforekap_session_user") continue
       const rawValue = typeof val === "string" ? val : JSON.stringify(val)
-      await pool.query(
-        `INSERT INTO app_store (store_key, store_value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE store_value = VALUES(store_value)`,
-        [key, rawValue]
-      )
-      await syncRelationalTables(key, rawValue)
+      await enqueueKeyWrite(key, async () => {
+        await db.query(
+          `INSERT INTO app_store (store_key, store_value)
+           VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE store_value = VALUES(store_value)`,
+          [key, rawValue]
+        )
+        await syncRelationalTables(key, rawValue)
+      })
     }
     res.json({ ok: true })
   } catch (err) {
@@ -304,7 +523,9 @@ app.post("/api/state", async (req, res) => {
 // Endpoint relasional untuk melihat data langsung dari tabel MySQL
 app.get("/api/school-profile", async (_req, res) => {
   try {
-    const [rows] = await pool.query("SELECT * FROM school_profile WHERE id = 1")
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+    const [rows] = await db.query("SELECT * FROM school_profile WHERE id = 1")
     res.json({ ok: true, data: rows[0] || null })
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
@@ -313,7 +534,9 @@ app.get("/api/school-profile", async (_req, res) => {
 
 app.get("/api/classes", async (_req, res) => {
   try {
-    const [rows] = await pool.query("SELECT * FROM classes ORDER BY name ASC")
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+    const [rows] = await db.query("SELECT * FROM classes ORDER BY name ASC")
     res.json({ ok: true, data: rows })
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
@@ -322,7 +545,9 @@ app.get("/api/classes", async (_req, res) => {
 
 app.get("/api/students", async (_req, res) => {
   try {
-    const [rows] = await pool.query("SELECT * FROM students ORDER BY class_room ASC, name ASC")
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+    const [rows] = await db.query("SELECT * FROM students ORDER BY class_room ASC, name ASC")
     res.json({ ok: true, data: rows })
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
@@ -331,7 +556,9 @@ app.get("/api/students", async (_req, res) => {
 
 app.get("/api/walikelas", async (_req, res) => {
   try {
-    const [rows] = await pool.query(
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+    const [rows] = await db.query(
       "SELECT id, name, nip, assigned_class, username, is_active, updated_at FROM walikelas_accounts ORDER BY assigned_class ASC"
     )
     res.json({ ok: true, data: rows })
@@ -342,7 +569,9 @@ app.get("/api/walikelas", async (_req, res) => {
 
 app.get("/api/scores", async (_req, res) => {
   try {
-    const [rows] = await pool.query("SELECT * FROM student_scores")
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+    const [rows] = await db.query("SELECT * FROM student_scores")
     res.json({ ok: true, data: rows })
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
@@ -351,7 +580,9 @@ app.get("/api/scores", async (_req, res) => {
 
 app.get("/api/validations", async (_req, res) => {
   try {
-    const [rows] = await pool.query("SELECT * FROM validation_queue ORDER BY class_name ASC")
+    const db = await ensurePool()
+    if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
+    const [rows] = await db.query("SELECT * FROM validation_queue ORDER BY class_name ASC")
     res.json({ ok: true, data: rows })
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
@@ -363,9 +594,18 @@ app.get("/api/validations", async (_req, res) => {
 // ============================================================================
 const distDir = path.join(__dirname, "..", "dist")
 if (fs.existsSync(distDir)) {
-  app.use(express.static(distDir))
+  app.use(
+    express.static(distDir, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith(".html")) {
+          res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate")
+        }
+      },
+    })
+  )
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api/")) return next()
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate")
     res.sendFile(path.join(distDir, "index.html"))
   })
 }
