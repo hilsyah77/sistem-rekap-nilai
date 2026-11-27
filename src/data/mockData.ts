@@ -78,10 +78,4 @@ export const WALIKELAS_NAV_ITEMS = [
     icon: 'TableProperties',
     description: 'Spreadsheet nilai per semester & UAM',
   },
-  {
-    id: 'walikelas-rekap',
-    title: 'Rekap & Cetak Raport',
-    icon: 'Printer',
-    description: 'Cetak lembar raport, leger & SKL',
-  },
 ]

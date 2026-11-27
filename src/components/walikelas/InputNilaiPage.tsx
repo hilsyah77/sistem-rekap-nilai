@@ -137,17 +137,6 @@ export const InputNilaiPage: React.FC<InputNilaiPageProps> = ({
             </Button>
           )}
 
-          {onNavigate && (
-            <Button
-              variant="outline"
-              onClick={() => onNavigate("walikelas-rekap")}
-              className="text-xs font-semibold gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50 shadow-xs"
-            >
-              <Printer className="w-4 h-4 text-slate-600" />
-              Cetak Rekap
-            </Button>
-          )}
-
           <Button
             onClick={() => setIsSubmitModalOpen(true)}
             disabled={isLocked || classStudents.length === 0}

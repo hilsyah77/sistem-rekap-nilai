@@ -192,14 +192,6 @@ export const WalikelasDashboard: React.FC<WalikelasDashboardProps> = ({
             <Edit3 className="w-3.5 h-3.5" />
             Input Lembar Nilai
           </Button>
-          <Button
-            variant="outline"
-            onClick={() => onNavigate("walikelas-rekap")}
-            className="text-xs font-semibold gap-1.5 border-emerald-200 text-emerald-800 hover:bg-emerald-100/60"
-          >
-            <Printer className="w-3.5 h-3.5" />
-            Cetak Rekap
-          </Button>
         </div>
       </div>
     </div>
