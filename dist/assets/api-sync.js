@@ -184,6 +184,23 @@
     })
   }
 
+  function getScoreSyncHeaders() {
+    var headers = { "Content-Type": "application/json" }
+    try {
+      var rawUser = sessionStorage.getItem("sisforekap_session_user")
+      if (rawUser) {
+        var parsedUser = JSON.parse(rawUser)
+        if (parsedUser && parsedUser.role) {
+          headers["X-User-Role"] = encodeURIComponent(String(parsedUser.role))
+        }
+        if (parsedUser && parsedUser.assignedClass) {
+          headers["X-Assigned-Class"] = encodeURIComponent(String(parsedUser.assignedClass))
+        }
+      }
+    } catch (_e) {}
+    return headers
+  }
+
   function flushScores(useKeepalive) {
     var keys = Object.keys(pendingScoreChanges)
     if (keys.length === 0) return
@@ -199,7 +216,7 @@
     var payloadStr = JSON.stringify({ changes: changes })
     fetch(API_BASE + "/scores", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: getScoreSyncHeaders(),
       body: payloadStr,
       keepalive: Boolean(useKeepalive && payloadStr.length < 60000),
     })

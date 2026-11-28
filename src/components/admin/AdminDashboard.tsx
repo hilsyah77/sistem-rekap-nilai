@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { ActivePage, WalikelasAccount } from "@/types"
 import { ClassItem, StudentItem } from "./DataMasterPage"
 import { ClassValidationItem } from "@/data/mockValidationQueue"
+import { getSemesterMeta } from "@/lib/semesterLock"
 
 interface AdminDashboardProps {
   onNavigate: (page: ActivePage) => void
@@ -33,10 +34,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   walikelasAccounts = [],
   validationQueue = [],
 }) => {
-  const pendingValidations = validationQueue.filter(q => q.status === "menunggu_validasi")
-  const approvedValidations = validationQueue.filter(q => q.status === "disetujui")
+  const activeQueue = validationQueue.filter(q => q.status !== "draft")
+  const pendingValidations = activeQueue.filter(q => q.status === "menunggu_validasi")
+  const approvedClassCount = new Set(
+    activeQueue.filter(q => q.status === "disetujui").map(q => q.className)
+  ).size
   const completionPct = classes.length > 0
-    ? parseFloat(((approvedValidations.length / classes.length) * 100).toFixed(1))
+    ? Math.min(100, parseFloat(((approvedClassCount / classes.length) * 100).toFixed(1)))
     : 0
 
   return (
@@ -138,7 +142,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div className="bg-emerald-600 h-2 rounded-full" style={{ width: `${completionPct}%` }} />
             </div>
             <p className="text-[11px] text-slate-500 mt-1.5">
-              {approvedValidations.length} dari {classes.length} rombel telah disahkan
+              {approvedClassCount} dari {classes.length} rombel memiliki nilai disahkan
             </p>
           </CardContent>
         </Card>
@@ -153,9 +157,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-amber-800">{pendingValidations.length} Kelas</div>
-            <p className="text-xs text-amber-700/80 mt-1 flex items-center justify-between">
-              <span>{pendingValidations.length > 0 ? pendingValidations.map(p => p.className).join(", ") : "Tidak ada antrean"}</span>
+            <div className="text-2xl font-bold text-amber-800">{pendingValidations.length} Berkas</div>
+            <p className="text-xs text-amber-700/80 mt-1 flex items-center justify-between gap-2">
+              <span className="truncate">
+                {pendingValidations.length > 0
+                  ? pendingValidations
+                      .map(p => `${p.className} (${getSemesterMeta(p.semesterId).label})`)
+                      .join(", ")
+                  : "Tidak ada antrean"}
+              </span>
               <button 
                 onClick={() => onNavigate("admin-validasi")}
                 className="font-semibold text-amber-900 hover:underline inline-flex items-center cursor-pointer"
@@ -191,7 +201,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               classes.map((cls) => {
                 const count = students.filter(s => s.classRoom === cls.name).length
                 const acc = walikelasAccounts.find(w => w.assignedClass === cls.name)
-                const valItem = validationQueue.find(v => v.className === cls.name)
+                const classVals = activeQueue.filter(v => v.className === cls.name)
                 return (
                   <div key={cls.id} className="p-4 rounded-xl border border-slate-100 bg-slate-50/50 flex flex-wrap items-center justify-between gap-3">
                     <div>
@@ -200,7 +210,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         Wali Kelas: <strong>{cls.walikelas}</strong> • {count} Siswa
                       </p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       {acc ? (
                         <Badge variant={acc.isActive ? "success" : "destructive"} className="text-[10px] font-mono">
                           Login: {acc.username}
@@ -210,8 +220,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           Belum ada akun login
                         </Badge>
                       )}
-                      {valItem && (
+                      {classVals.map((valItem) => (
                         <Badge
+                          key={valItem.id}
                           variant={
                             valItem.status === "disetujui"
                               ? "success"
@@ -221,13 +232,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           }
                           className="text-[10px]"
                         >
+                          {getSemesterMeta(valItem.semesterId).label}:{" "}
                           {valItem.status === "disetujui"
                             ? "Disetujui"
                             : valItem.status === "menunggu_validasi"
-                            ? "Menunggu Validasi"
-                            : "Perlu Revisi"}
+                            ? "Menunggu"
+                            : "Revisi"}
                         </Badge>
-                      )}
+                      ))}
                     </div>
                   </div>
                 )

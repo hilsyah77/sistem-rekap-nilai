@@ -22,6 +22,8 @@ export const DEFAULT_WALIKELAS_LOGIN_RULE: WalikelasLoginRule = {
   allowWalikelasLogin: true,
   autoLockAfterSubmit: true,
   requireNip: false,
+  lockedSemesters: {},
+  classSemesterOverrides: {},
 }
 
 export const ADMIN_USER: User = {

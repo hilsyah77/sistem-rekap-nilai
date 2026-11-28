@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 
 interface SpreadsheetTableProps {
   isLocked: boolean
+  lockReason?: string
   semesterId: string
   semesterName: string
   students: StudentItem[]
@@ -16,6 +17,7 @@ interface SpreadsheetTableProps {
 
 export const SpreadsheetTable: React.FC<SpreadsheetTableProps> = ({
   isLocked,
+  lockReason,
   students,
   scoresForSemester,
   onScoreChange,
@@ -62,17 +64,23 @@ export const SpreadsheetTable: React.FC<SpreadsheetTableProps> = ({
         <div className="flex items-center gap-2">
           {isLocked ? (
             <div className="flex items-center gap-2 text-slate-700 font-semibold text-xs">
-              <span className="p-1 rounded bg-slate-200 text-slate-700">
+              <span className="p-1 rounded bg-amber-100 text-amber-800">
                 <Lock className="w-3.5 h-3.5" />
               </span>
-              <span>Mode Lembar Kerja Terkunci (Read-Only)</span>
+              <span>
+                Mode Lembar Kerja Terkunci ({lockReason || "Read-Only"})
+              </span>
             </div>
           ) : (
             <div className="flex items-center gap-2 text-emerald-800 font-semibold text-xs">
               <span className="p-1 rounded bg-emerald-100 text-emerald-800">
                 <Unlock className="w-3.5 h-3.5" />
               </span>
-              <span>Mode Input Aktif (Editable) • KKM Madrasah: 75</span>
+              <span>
+                {lockReason && lockReason !== "Mode Input Aktif"
+                  ? `${lockReason} (Editable) • KKM Madrasah: 75`
+                  : "Mode Input Aktif (Editable) • KKM Madrasah: 75"}
+              </span>
             </div>
           )}
         </div>

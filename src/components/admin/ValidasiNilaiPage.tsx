@@ -8,16 +8,12 @@ import {
   Eye, 
   Send, 
   FileText, 
-  Filter, 
   Check, 
-  ChevronRight,
-  ShieldCheck,
-  School,
-  UserCheck,
-  TrendingUp,
-  Sparkles
+  Unlock
 } from "lucide-react"
-import { MOCK_VALIDATION_QUEUE, ClassValidationItem, ClassValidationStatus } from "@/data/mockValidationQueue"
+import { MOCK_VALIDATION_QUEUE, ClassValidationItem } from "@/data/mockValidationQueue"
+import { SEMESTER_TABS } from "@/data/mockStudentScores"
+import { getSemesterMeta, normalizeSemesterId } from "@/lib/semesterLock"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -56,6 +52,7 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
   const setQueue = onChangeQueue ?? persistInternalQueue
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
+  const [semesterFilter, setSemesterFilter] = useState<string>("all")
 
   // Modal states for Reject (Catatan Revisi)
   const [rejectModalOpen, setRejectModalOpen] = useState(false)
@@ -78,20 +75,38 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
     "Mohon cek kembali nilai siswa pindahan yang belum terdaftar.",
   ]
 
+  // Hanya tampilkan pengajuan aktif (bukan draft yang sudah dibuka kuncinya)
+  const activeQueue = queue.filter((q) => q.status !== "draft")
+
   // Filter queue items
-  const filteredQueue = queue.filter(item => {
+  const filteredQueue = activeQueue.filter(item => {
     const matchesSearch = 
       item.className.toLowerCase().includes(searchQuery.toLowerCase()) ||
       item.walikelasName.toLowerCase().includes(searchQuery.toLowerCase())
-    
-    if (statusFilter === "all") return matchesSearch
-    return matchesSearch && item.status === statusFilter
+    const matchesStatus = statusFilter === "all" || item.status === statusFilter
+    const matchesSemester =
+      semesterFilter === "all" || normalizeSemesterId(item.semesterId) === semesterFilter
+    return matchesSearch && matchesStatus && matchesSemester
   })
 
   // Counters
-  const countPending = queue.filter(q => q.status === 'menunggu_validasi').length
-  const countApproved = queue.filter(q => q.status === 'disetujui').length
-  const countRevision = queue.filter(q => q.status === 'revisi').length
+  const countPending = activeQueue.filter(q => q.status === 'menunggu_validasi').length
+  const countApproved = activeQueue.filter(q => q.status === 'disetujui').length
+  const countRevision = activeQueue.filter(q => q.status === 'revisi').length
+
+  const handleUnlockItem = (target: ClassValidationItem) => {
+    setQueue((prev) =>
+      prev.map((item) =>
+        item.id === target.id
+          ? {
+              ...item,
+              status: "draft",
+              lastUpdated: "Kunci dibuka kembali oleh Super Admin • Baru saja",
+            }
+          : item
+      )
+    )
+  }
 
   // Handlers
   const handleOpenReject = (item: ClassValidationItem) => {
@@ -252,7 +267,7 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
             onClick={() => setStatusFilter("all")}
             className="text-xs h-8"
           >
-            Semua ({queue.length})
+            Semua ({activeQueue.length})
           </Button>
           <Button
             size="sm"
@@ -280,16 +295,31 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
           </Button>
         </div>
 
-        {/* Search input */}
-        <div className="relative w-full md:w-64">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Cari kelas / nama walikelas..."
-            className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
-          />
+        {/* Filter Semester & Search input */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full md:w-auto">
+          <select
+            value={semesterFilter}
+            onChange={(e) => setSemesterFilter(e.target.value)}
+            className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 bg-slate-50 text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+          >
+            <option value="all">Semua Semester</option>
+            {SEMESTER_TABS.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+
+          <div className="relative w-full sm:w-64">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Cari kelas / nama walikelas..."
+              className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+            />
+          </div>
         </div>
       </div>
 
@@ -312,19 +342,20 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
             <thead>
               <tr className="bg-slate-100/80 text-slate-700 font-semibold uppercase text-[11px] border-b border-slate-200">
                 <th className="px-4 py-3">Rombel / Kelas</th>
+                <th className="px-4 py-3">Semester</th>
                 <th className="px-4 py-3">Wali Kelas</th>
                 <th className="px-3 py-3 text-center">Siswa</th>
                 <th className="px-3 py-3 text-center">Rata-Rata</th>
                 <th className="px-4 py-3">Kelengkapan</th>
                 <th className="px-4 py-3">Waktu Pengajuan</th>
                 <th className="px-4 py-3 text-center">Status</th>
-                <th className="px-4 py-3 text-center w-56">Tindakan / Aksi</th>
+                <th className="px-4 py-3 text-center w-64">Tindakan / Aksi</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredQueue.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-slate-500 text-xs">
+                  <td colSpan={9} className="py-8 text-center text-slate-500 text-xs">
                     Tidak ada data antrean yang sesuai dengan kriteria pencarian.
                   </td>
                 </tr>
@@ -333,6 +364,7 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
                   const isPending = item.status === "menunggu_validasi"
                   const isApproved = item.status === "disetujui"
                   const isRevision = item.status === "revisi"
+                  const semMeta = getSemesterMeta(item.semesterId)
 
                   return (
                     <tr 
@@ -353,6 +385,14 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
                             <div className="text-[10px] text-slate-400 font-normal">Tingkat {item.grade}</div>
                           </div>
                         </div>
+                      </td>
+
+                      {/* Semester */}
+                      <td className="px-4 py-3">
+                        <Badge variant="outline" className="text-[11px] font-bold bg-emerald-50/70 text-emerald-900 border-emerald-200">
+                          {item.semesterLabel || semMeta.label}
+                        </Badge>
+                        <div className="text-[10px] text-slate-400 mt-0.5">{semMeta.gradeLabel}</div>
                       </td>
 
                       {/* Wali Kelas */}
@@ -463,6 +503,19 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
                             <XCircle className="w-3.5 h-3.5" />
                             <span>Reject</span>
                           </Button>
+
+                          {/* Tombol Buka Kunci cepat */}
+                          {(isApproved || isPending) && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleUnlockItem(item)}
+                              className="h-8 px-2 text-xs font-semibold text-amber-800 border-amber-300 hover:bg-amber-50"
+                              title="Buka kunci semester ini agar Wali Kelas dapat mengedit kembali"
+                            >
+                              <Unlock className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -482,7 +535,7 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
           </div>
           <DialogTitle>Tolak & Kembalikan Berkas untuk Revisi</DialogTitle>
           <DialogDescription className="text-xs text-slate-600 mt-1">
-            Anda akan mengembalikan lembar nilai <strong>{selectedClassForReject?.className}</strong> kepada Wali Kelas (<strong>{selectedClassForReject?.walikelasName}</strong>).
+            Anda akan mengembalikan lembar nilai <strong>{selectedClassForReject?.className}</strong> ({getSemesterMeta(selectedClassForReject?.semesterId).label}) kepada Wali Kelas (<strong>{selectedClassForReject?.walikelasName}</strong>).
           </DialogDescription>
         </DialogHeader>
 
@@ -555,7 +608,9 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
           <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-800 flex items-center justify-center mb-2">
             <CheckCircle2 className="w-6 h-6" />
           </div>
-          <DialogTitle>Sahkan & Setujui Nilai {selectedClassForApprove?.className}?</DialogTitle>
+          <DialogTitle>
+            Sahkan & Setujui Nilai {selectedClassForApprove?.className} ({getSemesterMeta(selectedClassForApprove?.semesterId).label})?
+          </DialogTitle>
           <DialogDescription className="text-xs text-slate-600 mt-2 leading-relaxed">
             Dengan menyetujui nilai ini:
             <ul className="list-disc pl-5 mt-2 space-y-1 text-slate-700">
@@ -597,7 +652,9 @@ export const ValidasiNilaiPage: React.FC<ValidasiNilaiPageProps> = ({
           <div className="w-12 h-12 rounded-2xl bg-blue-100 text-blue-800 flex items-center justify-center mb-2">
             <FileText className="w-6 h-6" />
           </div>
-          <DialogTitle>Pratinjau Berkas Nilai - {selectedClassForDetail?.className}</DialogTitle>
+          <DialogTitle>
+            Pratinjau Berkas Nilai - {selectedClassForDetail?.className} ({getSemesterMeta(selectedClassForDetail?.semesterId).label})
+          </DialogTitle>
           <DialogDescription className="text-xs text-slate-600">
             Diajukan oleh {selectedClassForDetail?.walikelasName} pada {selectedClassForDetail?.submittedAt}
           </DialogDescription>

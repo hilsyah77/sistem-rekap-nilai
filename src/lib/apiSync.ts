@@ -114,6 +114,21 @@ export function initApiSync() {
     })
   }
 
+  const getScoreSyncHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    try {
+      const rawUser = sessionStorage.getItem("sisforekap_session_user")
+      if (rawUser) {
+        const parsedUser = JSON.parse(rawUser) as { role?: string; assignedClass?: string }
+        if (parsedUser?.role) headers["X-User-Role"] = encodeURIComponent(String(parsedUser.role))
+        if (parsedUser?.assignedClass) {
+          headers["X-Assigned-Class"] = encodeURIComponent(String(parsedUser.assignedClass))
+        }
+      }
+    } catch {}
+    return headers
+  }
+
   const flushScores = (useKeepalive: boolean) => {
     const keys = Object.keys(pendingScoreChanges)
     if (keys.length === 0) return
@@ -127,7 +142,7 @@ export function initApiSync() {
     isFlushingScores = true
     fetch(`${API_BASE}/scores`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: getScoreSyncHeaders(),
       body: payloadStr,
       keepalive: Boolean(useKeepalive && payloadStr.length < 60000),
     })

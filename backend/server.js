@@ -86,6 +86,42 @@ async function initDatabase() {
         await nextPool.query(cleanedSchema)
       }
 
+      // 4. Migrasi otomatis kolom semester_id & unique index per (class_name, semester_id) pada validation_queue
+      try {
+        const [semCols] = await nextPool.query(
+          `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'validation_queue' AND COLUMN_NAME = 'semester_id'`,
+          [DB_CONFIG.database]
+        )
+        if (semCols.length === 0) {
+          await nextPool.query(
+            `ALTER TABLE validation_queue ADD COLUMN semester_id VARCHAR(32) NOT NULL DEFAULT 'sem-5' AFTER class_name`
+          )
+        }
+
+        const [oldIdx] = await nextPool.query(
+          `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS
+           WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'validation_queue' AND INDEX_NAME = 'idx_validation_class'`,
+          [DB_CONFIG.database]
+        )
+        if (oldIdx.length > 0) {
+          await nextPool.query(`ALTER TABLE validation_queue DROP INDEX idx_validation_class`)
+        }
+
+        const [newIdx] = await nextPool.query(
+          `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS
+           WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'validation_queue' AND INDEX_NAME = 'idx_validation_class_sem'`,
+          [DB_CONFIG.database]
+        )
+        if (newIdx.length === 0) {
+          await nextPool.query(
+            `ALTER TABLE validation_queue ADD UNIQUE KEY idx_validation_class_sem (class_name, semester_id)`
+          )
+        }
+      } catch (migErr) {
+        console.warn("[Database] Peringatan migrasi validation_queue:", migErr.message)
+      }
+
       pool = nextPool
       console.log(`[Database] Terhubung ke MySQL (${DB_CONFIG.host}:${DB_CONFIG.port}/${DB_CONFIG.database})`)
     } catch (err) {
@@ -223,12 +259,13 @@ async function syncRelationalTables(key, rawValue) {
         if (!v || !v.id) continue
         await conn.query(
           `INSERT INTO validation_queue (
-            id, class_name, grade, walikelas_name, walikelas_nip,
+            id, class_name, semester_id, grade, walikelas_name, walikelas_nip,
             student_count, submitted_at, completeness, average_score, status, revision_note
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             String(v.id),
             String(v.className || ""),
+            String(v.semesterId || "sem-5"),
             String(v.grade || "IX"),
             String(v.walikelasName || ""),
             String(v.walikelasNip || "-"),
@@ -310,6 +347,66 @@ app.get("/api/state", async (_req, res) => {
   }
 })
 
+// Helper cek apakah suatu semester terkunci untuk kelas tertentu
+async function getLockedSemestersForClass(conn, className, candidateSemesters) {
+  const lockedSet = new Set()
+  if (!className || candidateSemesters.length === 0) return lockedSet
+
+  const [ruleRows] = await conn.query(
+    "SELECT store_key, store_value FROM app_store WHERE store_key IN ('sisforekap_v2_walikelas_rule', 'sisforekap_v2_validations')"
+  )
+  let rule = {}
+  let validations = []
+  for (const r of ruleRows) {
+    try {
+      const parsed = JSON.parse(r.store_value)
+      if (r.store_key === "sisforekap_v2_walikelas_rule" && parsed && typeof parsed === "object") {
+        rule = parsed
+      } else if (r.store_key === "sisforekap_v2_validations" && Array.isArray(parsed)) {
+        validations = parsed
+      }
+    } catch {}
+  }
+
+  const targetClass = String(className).trim().toLowerCase()
+  let classOverrides = {}
+  if (rule.classSemesterOverrides && typeof rule.classSemesterOverrides === "object") {
+    if (rule.classSemesterOverrides[className]) {
+      classOverrides = rule.classSemesterOverrides[className]
+    } else {
+      for (const [k, v] of Object.entries(rule.classSemesterOverrides)) {
+        if (String(k).trim().toLowerCase() === targetClass && v && typeof v === "object") {
+          classOverrides = v
+          break
+        }
+      }
+    }
+  }
+
+  const autoLockAfterSubmit = rule.autoLockAfterSubmit !== false
+  for (const sem of candidateSemesters) {
+    const normSem = String(sem || "sem-5").trim() || "sem-5"
+    const ov = classOverrides[normSem]
+    const isGlobalLocked = Boolean(rule.lockedSemesters && rule.lockedSemesters[normSem])
+    const isAdminLocked = ov === "locked" ? true : ov === "unlocked" ? false : isGlobalLocked
+
+    const valItem = validations.find(
+      (v) =>
+        v &&
+        String(v.className || "").trim().toLowerCase() === targetClass &&
+        String(v.semesterId || "sem-5").trim() === normSem
+    )
+    const status = valItem ? String(valItem.status || "draft") : "draft"
+    const isValLocked =
+      autoLockAfterSubmit && (status === "menunggu_validasi" || status === "disetujui")
+
+    if (isAdminLocked || isValLocked) {
+      lockedSet.add(normSem)
+    }
+  }
+  return lockedSet
+}
+
 // Simpan perubahan nilai secara inkremental (aman untuk banyak perangkat bersamaan)
 app.patch("/api/scores", async (req, res) => {
   try {
@@ -321,10 +418,28 @@ app.patch("/api/scores", async (req, res) => {
       return res.json({ ok: true, updated: 0 })
     }
 
-    const updatedCount = await enqueueKeyWrite("sisforekap_v2_scores", async () => {
+    const safeDecode = (v) => {
+      try {
+        return decodeURIComponent(String(v || ""))
+      } catch {
+        return String(v || "")
+      }
+    }
+    const userRole = safeDecode(req.headers["x-user-role"]).trim().toLowerCase()
+    const assignedClass = safeDecode(req.headers["x-assigned-class"]).trim()
+
+    const result = await enqueueKeyWrite("sisforekap_v2_scores", async () => {
       const conn = await db.getConnection()
       try {
         await conn.beginTransaction()
+
+        let lockedSemesters = new Set()
+        if (userRole === "walikelas" && assignedClass) {
+          const distinctSems = Array.from(
+            new Set(changes.map((ch) => String(ch?.semesterId || "sem-5")))
+          )
+          lockedSemesters = await getLockedSemestersForClass(conn, assignedClass, distinctSems)
+        }
 
         // 1. Ambil JSON nilai terakhir dari app_store (lock row agar konsisten)
         const [rows] = await conn.query(
@@ -340,10 +455,15 @@ app.patch("/api/scores", async (req, res) => {
 
         const upserts = []
         const deletes = []
+        let skippedLocked = 0
 
         for (const ch of changes) {
           if (!ch || !ch.semesterId || !ch.studentId || !ch.subjectId) continue
           const semId = String(ch.semesterId)
+          if (lockedSemesters.has(semId)) {
+            skippedLocked++
+            continue
+          }
           const stdId = String(ch.studentId)
           const subId = String(ch.subjectId)
           const val = ch.value
@@ -367,32 +487,34 @@ app.patch("/api/scores", async (req, res) => {
           }
         }
 
-        // 2. Simpan JSON hasil merge ke app_store
-        await conn.query(
-          `INSERT INTO app_store (store_key, store_value)
-           VALUES ('sisforekap_v2_scores', ?)
-           ON DUPLICATE KEY UPDATE store_value = VALUES(store_value)`,
-          [JSON.stringify(currentScores)]
-        )
+        if (upserts.length > 0 || deletes.length > 0) {
+          // 2. Simpan JSON hasil merge ke app_store
+          await conn.query(
+            `INSERT INTO app_store (store_key, store_value)
+             VALUES ('sisforekap_v2_scores', ?)
+             ON DUPLICATE KEY UPDATE store_value = VALUES(store_value)`,
+            [JSON.stringify(currentScores)]
+          )
 
-        // 3. Upsert & delete hanya baris yang berubah di tabel relasional student_scores
-        if (upserts.length > 0) {
-          await conn.query(
-            `INSERT INTO student_scores (semester_id, student_id, subject_id, score)
-             VALUES ?
-             ON DUPLICATE KEY UPDATE score = VALUES(score)`,
-            [upserts]
-          )
-        }
-        for (const [semId, stdId, subId] of deletes) {
-          await conn.query(
-            `DELETE FROM student_scores WHERE semester_id = ? AND student_id = ? AND subject_id = ?`,
-            [semId, stdId, subId]
-          )
+          // 3. Upsert & delete hanya baris yang berubah di tabel relasional student_scores
+          if (upserts.length > 0) {
+            await conn.query(
+              `INSERT INTO student_scores (semester_id, student_id, subject_id, score)
+               VALUES ?
+               ON DUPLICATE KEY UPDATE score = VALUES(score)`,
+              [upserts]
+            )
+          }
+          for (const [semId, stdId, subId] of deletes) {
+            await conn.query(
+              `DELETE FROM student_scores WHERE semester_id = ? AND student_id = ? AND subject_id = ?`,
+              [semId, stdId, subId]
+            )
+          }
         }
 
         await conn.commit()
-        return upserts.length + deletes.length
+        return { updated: upserts.length + deletes.length, skippedLocked }
       } catch (err) {
         await conn.rollback()
         throw err
@@ -401,7 +523,7 @@ app.patch("/api/scores", async (req, res) => {
       }
     })
 
-    res.json({ ok: true, updated: updatedCount })
+    res.json({ ok: true, updated: result.updated, skippedLocked: result.skippedLocked })
   } catch (err) {
     console.error("[Database] Gagal PATCH /api/scores:", err.message)
     res.status(500).json({ ok: false, error: err.message })
@@ -453,7 +575,7 @@ app.put("/api/state/:key", async (req, res) => {
           }
         } catch {}
       } else if (key === "sisforekap_v2_validations") {
-        // Gabungkan antrean validasi per className agar pengajuan wali kelas dari perangkat lain tidak saling menimpa
+        // Gabungkan antrean validasi per (className, semesterId) agar pengajuan per semester tidak saling menimpa
         try {
           const incoming = JSON.parse(rawValue)
           if (Array.isArray(incoming)) {
@@ -467,14 +589,20 @@ app.put("/api/state/:key", async (req, res) => {
                 if (Array.isArray(parsedExisting)) existing = parsedExisting
               } catch {}
             }
-            const byClass = new Map()
+            const byClassSem = new Map()
             for (const item of existing) {
-              if (item && item.className) byClass.set(item.className, item)
+              if (item && item.className) {
+                const semKey = String(item.semesterId || "sem-5")
+                byClassSem.set(`${item.className}|||${semKey}`, item)
+              }
             }
             for (const item of incoming) {
-              if (item && item.className) byClass.set(item.className, item)
+              if (item && item.className) {
+                const semKey = String(item.semesterId || "sem-5")
+                byClassSem.set(`${item.className}|||${semKey}`, item)
+              }
             }
-            valueToSave = JSON.stringify(Array.from(byClass.values()))
+            valueToSave = JSON.stringify(Array.from(byClassSem.values()))
           }
         } catch {}
       }
@@ -582,7 +710,7 @@ app.get("/api/validations", async (_req, res) => {
   try {
     const db = await ensurePool()
     if (!db) return res.status(503).json({ ok: false, error: "Database belum terhubung" })
-    const [rows] = await db.query("SELECT * FROM validation_queue ORDER BY class_name ASC")
+    const [rows] = await db.query("SELECT * FROM validation_queue ORDER BY class_name ASC, semester_id ASC")
     res.json({ ok: true, data: rows })
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })

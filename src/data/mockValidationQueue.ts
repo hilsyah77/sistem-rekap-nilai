@@ -3,6 +3,8 @@ export type ClassValidationStatus = 'menunggu_validasi' | 'disetujui' | 'revisi'
 export interface ClassValidationItem {
   id: string
   className: string
+  semesterId?: string
+  semesterLabel?: string
   grade: 'VII' | 'VIII' | 'IX'
   walikelasName: string
   walikelasNip: string

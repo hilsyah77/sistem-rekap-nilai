@@ -9,6 +9,12 @@ import { InputNilaiPage } from "@/components/walikelas/InputNilaiPage"
 import { RekapCetakPage } from "@/components/walikelas/RekapCetakPage"
 import { DEFAULT_SCHOOL_PROFILE, DEFAULT_WALIKELAS_LOGIN_RULE } from "@/data/mockData"
 import { ClassValidationItem } from "@/data/mockValidationQueue"
+import {
+  getClassValidations,
+  getSemesterLockState,
+  getSemesterMeta,
+  normalizeSemesterId,
+} from "@/lib/semesterLock"
 import { User, ActivePage, SchoolProfile, WalikelasAccount, WalikelasLoginRule } from "@/types"
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 
@@ -120,6 +126,8 @@ export function App() {
     }
   })
 
+  const [initialInputSemester, setInitialInputSemester] = useState<string>("sem-5")
+
   const handleUpdateClasses: React.Dispatch<React.SetStateAction<ClassItem[]>> = (updater) => {
     setClassesState((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater
@@ -168,6 +176,17 @@ export function App() {
   }
 
   const handleScoreChange = (semesterId: string, studentId: string, subjectId: string, value: number | '') => {
+    if (currentUser?.role === "walikelas") {
+      const assignedClass = currentUser.assignedClass || "Kelas IX-A"
+      const lockState = getSemesterLockState({
+        className: assignedClass,
+        semesterId,
+        rule: walikelasLoginRule,
+        validationQueue,
+      })
+      if (lockState.isLocked) return
+    }
+
     setScoresBySemesterState((prev) => {
       const next = {
         ...prev,
@@ -230,29 +249,52 @@ export function App() {
     setActivePage("login")
   }
 
-  const handleSubmitValidationForCurrentUser = () => {
+  const handleSubmitValidationForCurrentUser = (semesterId: string = "sem-5") => {
     if (!currentUser || currentUser.role !== "walikelas") return
     const assignedClass = currentUser.assignedClass || "Kelas IX-A"
-    const classStudents = students.filter((s) => s.classRoom === assignedClass)
-    const sem5 = scoresBySemester["sem-5"] || {}
+    const normSem = normalizeSemesterId(semesterId)
+    const semMeta = getSemesterMeta(normSem)
+
+    const lockState = getSemesterLockState({
+      className: assignedClass,
+      semesterId: normSem,
+      rule: walikelasLoginRule,
+      validationQueue,
+    })
+    if (lockState.isLocked) return
+
+    const targetRoom = assignedClass.trim().toLowerCase()
+    const classStudents = students.filter(
+      (s) => (s.classRoom || "").trim().toLowerCase() === targetRoom
+    )
+    const semScores = scoresBySemester[normSem] || {}
 
     let sumAvg = 0
     let countWithScores = 0
     classStudents.forEach((std) => {
-      const vals = Object.values(sem5[std.id] || {}).filter((v): v is number => typeof v === "number")
+      const vals = Object.values(semScores[std.id] || {}).filter(
+        (v): v is number => typeof v === "number"
+      )
       if (vals.length > 0) {
         sumAvg += vals.reduce((a, b) => a + b, 0) / vals.length
         countWithScores++
       }
     })
     const avgScore = countWithScores > 0 ? parseFloat((sumAvg / countWithScores).toFixed(1)) : 0
-    const completeness = classStudents.length > 0 ? Math.round((countWithScores / classStudents.length) * 100) : 100
+    const completeness =
+      classStudents.length > 0 ? Math.round((countWithScores / classStudents.length) * 100) : 100
 
     handleUpdateValidationQueue((prev) => {
-      const existing = prev.find((v) => v.className === assignedClass)
+      const existing = prev.find(
+        (v) =>
+          (v.className || "").trim().toLowerCase() === targetRoom &&
+          normalizeSemesterId(v.semesterId) === normSem
+      )
       const newItem: ClassValidationItem = {
-        id: existing ? existing.id : `val-${Date.now()}`,
+        id: existing ? existing.id : `val-${Date.now()}-${normSem}`,
         className: assignedClass,
+        semesterId: normSem,
+        semesterLabel: semMeta.label,
         grade: "IX",
         walikelasName: currentUser.name,
         walikelasNip: currentUser.nip || "-",
@@ -263,7 +305,7 @@ export function App() {
         status: "menunggu_validasi",
       }
       if (existing) {
-        return prev.map((v) => (v.className === assignedClass ? newItem : v))
+        return prev.map((v) => (v.id === existing.id ? newItem : v))
       }
       return [...prev, newItem]
     })
@@ -280,9 +322,11 @@ export function App() {
     )
   }
 
-  const currentWaliValidation = validationQueue.find(
-    (v) => v.className === (currentUser.assignedClass || "Kelas IX-A")
-  )
+  const currentAssignedClass = currentUser.assignedClass || "Kelas IX-A"
+  const currentWaliValidations = getClassValidations(validationQueue, currentAssignedClass)
+  const currentWaliValidation =
+    currentWaliValidations.find((v) => normalizeSemesterId(v.semesterId) === "sem-5") ||
+    currentWaliValidations[0]
 
   const renderContent = () => {
     switch (activePage) {
@@ -306,6 +350,12 @@ export function App() {
             tahunAjaran={tahunAjaran}
             students={students}
             validationItem={currentWaliValidation}
+            classValidations={currentWaliValidations}
+            walikelasLoginRule={walikelasLoginRule}
+            onOpenSemesterInput={(semId) => {
+              setInitialInputSemester(semId)
+              setActivePage("walikelas-input-nilai")
+            }}
           />
         )
 
@@ -320,6 +370,9 @@ export function App() {
             scoresBySemester={scoresBySemester}
             onScoreChange={handleScoreChange}
             validationItem={currentWaliValidation}
+            classValidations={currentWaliValidations}
+            walikelasLoginRule={walikelasLoginRule}
+            initialSemester={initialInputSemester}
             onSubmitForValidation={handleSubmitValidationForCurrentUser}
             autoLockAfterSubmit={walikelasLoginRule.autoLockAfterSubmit}
           />
@@ -360,6 +413,8 @@ export function App() {
             onChangeWalikelasAccounts={handleUpdateWalikelasAccounts}
             walikelasLoginRule={walikelasLoginRule}
             onChangeWalikelasLoginRule={handleUpdateWalikelasLoginRule}
+            validationQueue={validationQueue}
+            onChangeValidationQueue={handleUpdateValidationQueue}
             initialTab="siswa"
           />
         )
@@ -378,6 +433,8 @@ export function App() {
             onChangeWalikelasAccounts={handleUpdateWalikelasAccounts}
             walikelasLoginRule={walikelasLoginRule}
             onChangeWalikelasLoginRule={handleUpdateWalikelasLoginRule}
+            validationQueue={validationQueue}
+            onChangeValidationQueue={handleUpdateValidationQueue}
             initialTab="walikelas"
           />
         )

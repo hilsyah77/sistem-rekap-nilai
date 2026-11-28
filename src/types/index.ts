@@ -23,10 +23,15 @@ export interface WalikelasAccount {
   createdAt: string
 }
 
+export type SemesterId = 'sem-1' | 'sem-2' | 'sem-3' | 'sem-4' | 'sem-5' | 'uam'
+export type SemesterLockOverride = 'inherit' | 'locked' | 'unlocked'
+
 export interface WalikelasLoginRule {
   allowWalikelasLogin: boolean
   autoLockAfterSubmit: boolean
   requireNip: boolean
+  lockedSemesters?: Record<string, boolean>
+  classSemesterOverrides?: Record<string, Record<string, 'locked' | 'unlocked'>>
 }
 
 export interface SchoolProfile {

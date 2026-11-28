@@ -103,10 +103,11 @@ CREATE TABLE IF NOT EXISTS student_scores (
   INDEX idx_scores_student (student_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 6. Tabel Antrean Validasi Nilai Kelas
+-- 6. Tabel Antrean Validasi Nilai Kelas per Semester
 CREATE TABLE IF NOT EXISTS validation_queue (
   id VARCHAR(64) PRIMARY KEY,
   class_name VARCHAR(100) NOT NULL,
+  semester_id VARCHAR(32) NOT NULL DEFAULT 'sem-5',
   grade VARCHAR(20) NOT NULL DEFAULT 'IX',
   walikelas_name VARCHAR(150) NOT NULL,
   walikelas_nip VARCHAR(50) DEFAULT '-',
@@ -117,7 +118,7 @@ CREATE TABLE IF NOT EXISTS validation_queue (
   status VARCHAR(40) NOT NULL DEFAULT 'menunggu_validasi',
   revision_note TEXT,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY idx_validation_class (class_name)
+  UNIQUE KEY idx_validation_class_sem (class_name, semester_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 7. Tabel Sinkronisasi State Aplikasi (Key-Value JSON Store)

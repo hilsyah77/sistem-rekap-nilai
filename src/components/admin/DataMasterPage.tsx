@@ -18,17 +18,22 @@ import {
   CheckCircle2,
   UserCheck,
   Lock,
+  Unlock,
   KeyRound,
   ShieldCheck,
-  Eye
+  Eye,
+  SlidersHorizontal
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { SchoolProfile, WalikelasAccount, WalikelasLoginRule } from "@/types"
+import { SchoolProfile, SemesterLockOverride, WalikelasAccount, WalikelasLoginRule } from "@/types"
 import { DEFAULT_SCHOOL_PROFILE, DEFAULT_WALIKELAS_LOGIN_RULE } from "@/data/mockData"
+import { SEMESTER_TABS } from "@/data/mockStudentScores"
+import { ClassValidationItem } from "@/data/mockValidationQueue"
+import { getClassOverrideMap, getSemesterLockState } from "@/lib/semesterLock"
 import { cn } from "@/lib/utils"
 
 export interface StudentItem {
@@ -76,6 +81,8 @@ interface DataMasterPageProps {
   onChangeWalikelasAccounts: React.Dispatch<React.SetStateAction<WalikelasAccount[]>>
   walikelasLoginRule: WalikelasLoginRule
   onChangeWalikelasLoginRule: (rule: WalikelasLoginRule) => void
+  validationQueue?: ClassValidationItem[]
+  onChangeValidationQueue?: React.Dispatch<React.SetStateAction<ClassValidationItem[]>>
   initialTab?: string
 }
 
@@ -91,6 +98,8 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
   onChangeWalikelasAccounts,
   walikelasLoginRule = DEFAULT_WALIKELAS_LOGIN_RULE,
   onChangeWalikelasLoginRule,
+  validationQueue = [],
+  onChangeValidationQueue,
   initialTab = "siswa",
 }) => {
   const [activeMainTab, setActiveMainTab] = useState(initialTab)
@@ -159,6 +168,95 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
   const [isWaliModalOpen, setIsWaliModalOpen] = useState(false)
   const [editingWaliAccount, setEditingWaliAccount] = useState<WalikelasAccount | null>(null)
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({})
+  const [overrideClassModalTarget, setOverrideClassModalTarget] = useState<string | null>(null)
+
+  const handleToggleGlobalSemesterLock = (semesterId: string) => {
+    const prevLocked = walikelasLoginRule.lockedSemesters || {}
+    onChangeWalikelasLoginRule({
+      ...walikelasLoginRule,
+      lockedSemesters: {
+        ...prevLocked,
+        [semesterId]: !prevLocked[semesterId],
+      },
+    })
+  }
+
+  const handleBatchGlobalSemesterLock = (mode: "sem1_4" | "lock_all" | "unlock_all") => {
+    const nextLocked: Record<string, boolean> = {}
+    if (mode === "sem1_4") {
+      SEMESTER_TABS.forEach((t) => {
+        nextLocked[t.id] = ["sem-1", "sem-2", "sem-3", "sem-4"].includes(t.id)
+      })
+    } else if (mode === "lock_all") {
+      SEMESTER_TABS.forEach((t) => {
+        nextLocked[t.id] = true
+      })
+    }
+    onChangeWalikelasLoginRule({
+      ...walikelasLoginRule,
+      lockedSemesters: nextLocked,
+    })
+  }
+
+  const handleSetClassSemesterOverride = (
+    className: string,
+    semesterId: string,
+    mode: SemesterLockOverride
+  ) => {
+    const prevAll = { ...(walikelasLoginRule.classSemesterOverrides || {}) }
+    const prevClass = { ...getClassOverrideMap(walikelasLoginRule, className) }
+    // Hapus key dengan casing berbeda agar konsisten pada satu nama kelas
+    Object.keys(prevAll).forEach((k) => {
+      if (k.trim().toLowerCase() === className.trim().toLowerCase() && k !== className) {
+        delete prevAll[k]
+      }
+    })
+    if (mode === "inherit") {
+      delete prevClass[semesterId]
+    } else {
+      prevClass[semesterId] = mode
+    }
+    if (Object.keys(prevClass).length === 0) {
+      delete prevAll[className]
+    } else {
+      prevAll[className] = prevClass
+    }
+    onChangeWalikelasLoginRule({
+      ...walikelasLoginRule,
+      classSemesterOverrides: prevAll,
+    })
+  }
+
+  const handleResetClassOverrides = (className: string) => {
+    const prevAll = { ...(walikelasLoginRule.classSemesterOverrides || {}) }
+    Object.keys(prevAll).forEach((k) => {
+      if (k.trim().toLowerCase() === className.trim().toLowerCase()) {
+        delete prevAll[k]
+      }
+    })
+    onChangeWalikelasLoginRule({
+      ...walikelasLoginRule,
+      classSemesterOverrides: prevAll,
+    })
+  }
+
+  const handleUnlockValidationForSemester = (className: string, semesterId: string) => {
+    if (!onChangeValidationQueue) return
+    const targetClass = className.trim().toLowerCase()
+    onChangeValidationQueue((prev) =>
+      prev.map((item) => {
+        const itemSem = (item.semesterId || "sem-5").trim()
+        if (item.className.trim().toLowerCase() === targetClass && itemSem === semesterId) {
+          return {
+            ...item,
+            status: "draft",
+            lastUpdated: "Kunci validasi dibuka kembali oleh Admin • Baru saja",
+          }
+        }
+        return item
+      })
+    )
+  }
   const [waliFormData, setWaliFormData] = useState({
     name: "",
     nip: "",
@@ -1258,6 +1356,13 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
                                 <ChevronRight className="w-3.5 h-3.5" />
                               </button>
                               <button
+                                onClick={() => setOverrideClassModalTarget(cls.name)}
+                                className="p-1.5 text-slate-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                                title="Atur Kunci Semester Rombel Ini"
+                              >
+                                <SlidersHorizontal className="w-3.5 h-3.5" />
+                              </button>
+                              <button
                                 onClick={() => handleOpenEditClass(cls)}
                                 className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
                                 title="Edit Data Rombel"
@@ -1342,10 +1447,100 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
                 <div>
                   <span className="font-bold text-slate-800 block">Kunci Otomatis Setelah Kirim Nilai ke Admin</span>
                   <span className="text-[11px] text-slate-500">
-                    Lembar nilai otomatis terkunci (read-only) setelah Wali Kelas mengirim nilai untuk divalidasi.
+                    Lembar nilai semester terkait otomatis terkunci (read-only) setelah Wali Kelas mengirim nilai semester tersebut untuk divalidasi.
                   </span>
                 </div>
               </label>
+            </div>
+
+            {/* Penguncian Input Nilai per Semester (Global) */}
+            <div className="pt-3 border-t border-slate-100 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h5 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <Lock className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>Penguncian Input Nilai per Semester (Global Seluruh Rombel)</span>
+                  </h5>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Klik kartu semester untuk mengunci atau membuka akses edit nilai bagi seluruh Wali Kelas. Anda tetap dapat memberi pengecualian (override) per kelas di tabel bawah.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleBatchGlobalSemesterLock("sem1_4")}
+                    className="text-[11px] h-7 px-2.5 border-amber-300 text-amber-900 hover:bg-amber-50"
+                  >
+                    Kunci Sem 1–4
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleBatchGlobalSemesterLock("unlock_all")}
+                    className="text-[11px] h-7 px-2.5 border-emerald-300 text-emerald-800 hover:bg-emerald-50"
+                  >
+                    Buka Semua
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleBatchGlobalSemesterLock("lock_all")}
+                    className="text-[11px] h-7 px-2.5 border-red-200 text-red-700 hover:bg-red-50"
+                  >
+                    Kunci Semua
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                {SEMESTER_TABS.map((tab) => {
+                  const isLockedGlobal = Boolean(walikelasLoginRule.lockedSemesters?.[tab.id])
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => handleToggleGlobalSemesterLock(tab.id)}
+                      className={cn(
+                        "p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2",
+                        isLockedGlobal
+                          ? "bg-amber-50/70 border-amber-300 hover:bg-amber-100/60"
+                          : "bg-emerald-50/40 border-emerald-200 hover:bg-emerald-50"
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-xs font-bold text-slate-900">{tab.label}</span>
+                        <span
+                          className={cn(
+                            "w-6 h-6 rounded-lg flex items-center justify-center shrink-0",
+                            isLockedGlobal
+                              ? "bg-amber-200/80 text-amber-900"
+                              : "bg-emerald-100 text-emerald-700"
+                          )}
+                        >
+                          {isLockedGlobal ? (
+                            <Lock className="w-3.5 h-3.5" />
+                          ) : (
+                            <Unlock className="w-3.5 h-3.5" />
+                          )}
+                        </span>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-slate-500 truncate">{tab.gradeLabel}</p>
+                        <Badge
+                          variant={isLockedGlobal ? "warning" : "success"}
+                          className="text-[10px] mt-1.5 w-full justify-center"
+                        >
+                          {isLockedGlobal ? "Dikunci" : "Dibuka"}
+                        </Badge>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
 
@@ -1355,10 +1550,10 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
               <div>
                 <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
                   <KeyRound className="w-4 h-4 text-emerald-700" />
-                  <span>Daftar Akun & Kredensial Login Wali Kelas</span>
+                  <span>Daftar Akun, Kredensial & Kunci Semester per Kelas</span>
                 </h4>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Tambahkan username, password, dan kelas ampuan agar Wali Kelas dapat login ke aplikasi.
+                  Kelola kredensial login Wali Kelas serta atur pengecualian buka/kunci semester untuk kelas tertentu.
                 </p>
               </div>
               <Button
@@ -1380,6 +1575,7 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
                     <th className="px-4 py-3">Rombel / Kelas Ampuan</th>
                     <th className="px-4 py-3">Username Login</th>
                     <th className="px-4 py-3">Password Login</th>
+                    <th className="px-4 py-3 text-center">Akses Semester</th>
                     <th className="px-4 py-3 text-center">Status Rule Login</th>
                     <th className="px-4 py-3 text-center w-36">Aksi</th>
                   </tr>
@@ -1387,13 +1583,24 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
                 <tbody className="divide-y divide-slate-100">
                   {walikelasAccounts.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-10 text-center text-slate-500 text-xs">
+                      <td colSpan={8} className="py-10 text-center text-slate-500 text-xs">
                         Belum ada akun login Wali Kelas. Klik tombol <strong>"Tambah Akun Login Wali Kelas"</strong> untuk membuat username & password Wali Kelas.
                       </td>
                     </tr>
                   ) : (
                     walikelasAccounts.map((acc, idx) => {
                       const isShown = !!showPasswords[acc.id]
+                      const classOverrideMap = getClassOverrideMap(walikelasLoginRule, acc.assignedClass)
+                      const overrideCount = Object.keys(classOverrideMap).length
+                      const unlockedCount = SEMESTER_TABS.filter(
+                        (t) =>
+                          !getSemesterLockState({
+                            className: acc.assignedClass,
+                            semesterId: t.id,
+                            rule: walikelasLoginRule,
+                            validationQueue,
+                          }).isLocked
+                      ).length
                       return (
                         <tr key={acc.id} className="hover:bg-slate-50">
                           <td className="px-3 py-3 text-center font-mono text-slate-500">{idx + 1}</td>
@@ -1424,6 +1631,24 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
                               >
                                 <Eye className="w-3.5 h-3.5" />
                               </button>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <div className="inline-flex flex-col items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setOverrideClassModalTarget(acc.assignedClass)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-emerald-50 hover:border-emerald-300 text-[11px] font-semibold text-slate-700 hover:text-emerald-800 transition-colors cursor-pointer"
+                                title="Atur pengecualian kunci semester untuk kelas ini"
+                              >
+                                <SlidersHorizontal className="w-3 h-3 text-emerald-600" />
+                                <span>{unlockedCount}/6 Terbuka</span>
+                              </button>
+                              {overrideCount > 0 && (
+                                <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200">
+                                  {overrideCount} Override Khusus
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="px-4 py-3 text-center">
@@ -2326,6 +2551,150 @@ export const DataMasterPage: React.FC<DataMasterPageProps> = ({
             className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
           >
             Simpan Perubahan
+          </Button>
+        </DialogFooter>
+      </Dialog>
+
+      {/* ============================================================== */}
+      {/* MODAL 8: OVERRIDE KUNCI SEMESTER KHUSUS PER KELAS               */}
+      {/* ============================================================== */}
+      <Dialog
+        open={Boolean(overrideClassModalTarget)}
+        onOpenChange={(open) => {
+          if (!open) setOverrideClassModalTarget(null)
+        }}
+      >
+        <DialogHeader>
+          <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-800 flex items-center justify-center mb-2">
+            <SlidersHorizontal className="w-6 h-6" />
+          </div>
+          <DialogTitle>
+            Pengaturan Kunci Semester — {overrideClassModalTarget}
+          </DialogTitle>
+          <DialogDescription className="text-xs text-slate-500 mt-1">
+            Atur pengecualian buka/kunci input nilai per semester khusus untuk <strong>{overrideClassModalTarget}</strong> tanpa mengubah aturan kelas lain.
+          </DialogDescription>
+        </DialogHeader>
+
+        {overrideClassModalTarget && (
+          <div className="space-y-2.5 py-2 max-h-[62vh] overflow-y-auto pr-1 text-xs">
+            {SEMESTER_TABS.map((tab) => {
+              const state = getSemesterLockState({
+                className: overrideClassModalTarget,
+                semesterId: tab.id,
+                rule: walikelasLoginRule,
+                validationQueue,
+              })
+              return (
+                <div
+                  key={tab.id}
+                  className="p-3 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                        <span>{tab.label}</span>
+                        <span className="text-[10px] font-normal text-slate-500">
+                          ({tab.gradeLabel})
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Status Global:{" "}
+                        <strong>{state.isGlobalLocked ? "Dikunci" : "Dibuka"}</strong>
+                      </p>
+                    </div>
+
+                    <Badge
+                      variant={state.isLocked ? "warning" : "success"}
+                      className="text-[10px] gap-1"
+                    >
+                      {state.isLocked ? (
+                        <Lock className="w-3 h-3" />
+                      ) : (
+                        <Unlock className="w-3 h-3" />
+                      )}
+                      <span>{state.reasonLabel}</span>
+                    </Badge>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 gap-0.5">
+                      {(
+                        [
+                          { id: "inherit", label: "Ikuti Global" },
+                          { id: "unlocked", label: "Buka Khusus" },
+                          { id: "locked", label: "Kunci Khusus" },
+                        ] as const
+                      ).map((opt) => {
+                        const active = state.overrideMode === opt.id
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() =>
+                              handleSetClassSemesterOverride(
+                                overrideClassModalTarget,
+                                tab.id,
+                                opt.id
+                              )
+                            }
+                            className={cn(
+                              "px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors cursor-pointer",
+                              active
+                                ? opt.id === "unlocked"
+                                  ? "bg-emerald-600 text-white"
+                                  : opt.id === "locked"
+                                  ? "bg-amber-600 text-white"
+                                  : "bg-slate-800 text-white"
+                                : "text-slate-600 hover:bg-slate-100"
+                            )}
+                          >
+                            {opt.label}
+                          </button>
+                        )
+                      })}
+                    </div>
+
+                    {state.isValidationLocked && onChangeValidationQueue && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          handleUnlockValidationForSemester(overrideClassModalTarget, tab.id)
+                        }
+                        className="h-7 px-2.5 text-[11px] border-emerald-300 text-emerald-800 hover:bg-emerald-50 gap-1"
+                      >
+                        <Unlock className="w-3 h-3" />
+                        <span>Buka Kunci Validasi</span>
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        <DialogFooter className="flex items-center justify-between gap-2">
+          {overrideClassModalTarget && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleResetClassOverrides(overrideClassModalTarget)}
+              className="text-xs"
+            >
+              Reset Semua ke Global
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => setOverrideClassModalTarget(null)}
+            className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+          >
+            Selesai
           </Button>
         </DialogFooter>
       </Dialog>
