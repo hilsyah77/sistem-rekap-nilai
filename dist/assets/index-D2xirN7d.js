@@ -169,15 +169,37 @@ Error generating stack: `+e.message+`
     return Array.from(set);
   })();
 
-  let[t,n]=(0,_.useState)(`leger`);
+  let[t,n]=(0,_.useState)(isAdmin?`ijazah`:`leger`);
   let[selClass,setSelClass]=(0,_.useState)(()=>isAdmin?(classOptions[0]||`Kelas IX-A`):(e?.assignedClass||`Kelas IX-A`));
   let[selSem,setSelSem]=(0,_.useState)(`sem-5`);
+  let[ijMode,setIjMode]=(0,_.useState)(`mapel`);
+  let[ijCfg,setIjCfg]=(0,_.useState)(()=>{
+    try{
+      let raw=localStorage.getItem(`sisforekap_v2_ijazah_config`);
+      return raw?{raporWeight:60,umWeight:40,rounding:`1dec`,...JSON.parse(raw)}:{raporWeight:60,umWeight:40,rounding:`1dec`};
+    }catch{return{raporWeight:60,umWeight:40,rounding:`1dec`}}
+  });
   let[r,i]=(0,_.useState)(``);
   let[l,u]=(0,_.useState)(!0);
   let[d,f]=(0,_.useState)(!0);
   let[p,m]=(0,_.useState)(null);
   let[sklNo,setSklNo]=(0,_.useState)(()=>localStorage.getItem(`sisforekap_v2_skl_no`)||`B-412/Mts.11.02/PP.00.5/06/2026`);
   let[ttlMap,setTtlMap]=(0,_.useState)(()=>{try{return JSON.parse(localStorage.getItem(`sisforekap_v2_ttl`)||`{}`)}catch{return{}}});
+
+  let updateIjCfg=patch=>{
+    setIjCfg(prev=>{
+      let next={...prev,...patch};
+      try{localStorage.setItem(`sisforekap_v2_ijazah_config`,JSON.stringify(next))}catch{}
+      return next;
+    });
+  };
+  let fmtIj=val=>ijCfg.rounding===`int`?Math.round(val):parseFloat(val.toFixed(1));
+  let avgNums=(arr,asIj=!1)=>{
+    let vs=arr.filter(x=>typeof x===`number`);
+    if(vs.length===0)return null;
+    let raw=vs.reduce((a,b)=>a+b,0)/vs.length;
+    return asIj?fmtIj(raw):parseFloat(raw.toFixed(1));
+  };
 
   let s=sp.titimangsa||`Semarang, 20 Desember 2026`;
   let activeClassLabel=isAdmin?(selClass===`ALL`?`Semua Kelas IX`:selClass):(e?.assignedClass||`Kelas IX-A`);
@@ -188,54 +210,149 @@ Error generating stack: `+e.message+`
     let wAcc=allWali.find(w=>w.assignedClass===selClass);
     if(wAcc)return{name:wAcc.name,nip:wAcc.nip||`-`};
     let clsObj=allClasses.find(c=>c.name===selClass);
-    if(clsObj&&(clsObj.walikelasName||clsObj.homeroomTeacher))return{name:clsObj.walikelasName||clsObj.homeroomTeacher,nip:clsObj.walikelasNip||`-`};
+    if(clsObj&&(clsObj.walikelas||clsObj.walikelasName||clsObj.homeroomTeacher))return{name:clsObj.walikelas||clsObj.walikelasName||clsObj.homeroomTeacher,nip:clsObj.walikelasNip||`-`};
     return{name:e?.name||`Wali Kelas ${selClass}`,nip:e?.nip||`-`};
   })();
 
   let filteredStds=allStds.filter(st=>{
-    if(isAdmin)return selClass===`ALL`?!0:st.classRoom===selClass;
-    return !e?.assignedClass||st.classRoom===e.assignedClass;
+    if(isAdmin)return selClass===`ALL`?!0:(st.classRoom||``).trim().toLowerCase()===selClass.trim().toLowerCase();
+    return !e?.assignedClass||(st.classRoom||``).trim().toLowerCase()===e.assignedClass.trim().toLowerCase();
   });
 
   let semSc=allScores[selSem]||{};
   let uamSc=allScores[`uam`]||{};
   let semIds=[`sem-1`,`sem-2`,`sem-3`,`sem-4`,`sem-5`];
+  let wR=Number(ijCfg.raporWeight)||0;
+  let wU=Number(ijCfg.umWeight)||0;
 
-  let h=filteredStds.map(st=>{
-    let scObj=semSc[st.id]||{};
-    let vals=Object.values(scObj).filter(v=>typeof v===`number`);
-    let tot=vals.reduce((a,b)=>a+b,0);
-    let avg=vals.length>0?parseFloat((tot/vals.length).toFixed(1)):0;
+  let computeGroup=targetStds=>{
+    let rows=targetStds.map(st=>{
+      let scObj=semSc[st.id]||{};
+      let vals=Object.values(scObj).filter(v=>typeof v===`number`);
+      let tot=vals.reduce((a,b)=>a+b,0);
+      let avg=vals.length>0?parseFloat((tot/vals.length).toFixed(1)):0;
 
-    let raporAvg={};
-    let uamSub={};
-    let ijazahSub={};
-    let ijazahVals=[];
-    Hr.forEach(sub=>{
-      let rVals=[];
+      let semAvgs={};
+      let validSemAvgs=[];
       semIds.forEach(sid=>{
-        let v=allScores[sid]?.[st.id]?.[sub.id];
-        if(typeof v===`number`)rVals.push(v);
+        let sMap=allScores[sid]?.[st.id]||{};
+        let sVals=Hr.map(sub=>sMap[sub.id]).filter(v=>typeof v===`number`);
+        if(sVals.length>0){
+          let sa=parseFloat((sVals.reduce((a,b)=>a+b,0)/sVals.length).toFixed(1));
+          semAvgs[sid]=sa;
+          validSemAvgs.push(sa);
+        }else{
+          semAvgs[sid]=null;
+        }
       });
-      if(rVals.length===0&&typeof scObj[sub.id]===`number`)rVals.push(scObj[sub.id]);
-      let rAvg=rVals.length>0? parseFloat((rVals.reduce((a,b)=>a+b,0)/rVals.length).toFixed(1)) : 0;
-      let uVal=typeof uamSc[st.id]?.[sub.id]===`number` ? uamSc[st.id][sub.id] : rAvg;
-      let ijVal=(rAvg>0&&uVal>0)?parseFloat(((rAvg*0.6)+(uVal*0.4)).toFixed(1)):(rAvg||uVal||0);
-      raporAvg[sub.id]=rAvg;
-      uamSub[sub.id]=uVal;
-      ijazahSub[sub.id]=ijVal;
-      if(ijVal>0)ijazahVals.push(ijVal);
+      let sumSem1to5Avg=validSemAvgs.length>0?parseFloat(validSemAvgs.reduce((a,b)=>a+b,0).toFixed(1)):null;
+
+      let raporAvg={};
+      let uamSub={};
+      let ijazahSub={};
+      let validRapor=[];
+      let validUm=[];
+      let validIj=[];
+
+      Hr.forEach(sub=>{
+        let rVals=[];
+        semIds.forEach(sid=>{
+          let v=allScores[sid]?.[st.id]?.[sub.id];
+          if(typeof v===`number`)rVals.push(v);
+        });
+        let rAvg=rVals.length>0?parseFloat((rVals.reduce((a,b)=>a+b,0)/rVals.length).toFixed(1)):null;
+        let rawU=uamSc[st.id]?.[sub.id];
+        let uVal=typeof rawU===`number`?rawU:null;
+        let ijVal=null;
+        if(rAvg!==null&&uVal!==null){
+          ijVal=fmtIj((rAvg*wR/100)+(uVal*wU/100));
+        }else if(rAvg!==null&&wU===0){
+          ijVal=fmtIj(rAvg);
+        }else if(uVal!==null&&wR===0){
+          ijVal=fmtIj(uVal);
+        }
+        raporAvg[sub.id]=rAvg;
+        uamSub[sub.id]=uVal;
+        ijazahSub[sub.id]=ijVal;
+        if(rAvg!==null)validRapor.push(rAvg);
+        if(uVal!==null)validUm.push(uVal);
+        if(ijVal!==null)validIj.push(ijVal);
+      });
+
+      let totalRaporSem15=validRapor.length>0?parseFloat(validRapor.reduce((a,b)=>a+b,0).toFixed(1)):null;
+      let globalRaporAvg=validRapor.length>0?parseFloat((validRapor.reduce((a,b)=>a+b,0)/validRapor.length).toFixed(1)):null;
+      let totalUm=validUm.length>0?parseFloat(validUm.reduce((a,b)=>a+b,0).toFixed(1)):null;
+      let globalUmAvg=validUm.length>0?parseFloat((validUm.reduce((a,b)=>a+b,0)/validUm.length).toFixed(1)):null;
+      let totalIjazah=validIj.length>0?parseFloat(validIj.reduce((a,b)=>a+b,0).toFixed(1)):null;
+      let sklAverage=validIj.length>0?fmtIj(validIj.reduce((a,b)=>a+b,0)/validIj.length):null;
+
+      return{...st,scores:scObj,totalScore:tot,averageScore:avg,semAvgs,sumSem1to5Avg,raporAvg,uamSub,ijazahSub,totalRaporSem15,globalRaporAvg,totalUm,globalUmAvg,totalIjazah,sklAverage};
     });
-    let sklAverage=ijazahVals.length>0?parseFloat((ijazahVals.reduce((a,b)=>a+b,0)/ijazahVals.length).toFixed(1)):avg;
 
-    return{...st,scores:scObj,totalScore:tot,averageScore:avg,raporAvg,uamSub,ijazahSub,sklAverage};
-  }).sort((a,b)=>b.averageScore-a.averageScore).map((st,idx)=>({...st,rank:idx+1}));
+    rows.sort((a,b)=>{
+      if(t===`ijazah`||t===`skl`){
+        let sa=a.sklAverage??a.globalRaporAvg??0;
+        let sb=b.sklAverage??b.globalRaporAvg??0;
+        return sb-sa;
+      }
+      return b.averageScore-a.averageScore;
+    });
+    return rows.map((st,idx)=>({...st,rank:idx+1}));
+  };
 
-  let g=h.find(st=>st.id===r)||h[0]||{id:``,name:`(Belum Ada Siswa Terdaftar)`,nisn:`-`,nis:`-`,gender:`L`,classRoom:activeClassLabel,scores:{},raporAvg:{},uamSub:{},ijazahSub:{},totalScore:0,averageScore:0,sklAverage:0,rank:1};
+  let h=computeGroup(filteredStds);
+
+  let g=h.find(st=>st.id===r)||h[0]||{id:``,name:`(Belum Ada Siswa Terdaftar)`,nisn:`-`,nis:`-`,gender:`L`,classRoom:activeClassLabel,scores:{},semAvgs:{},sumSem1to5Avg:null,raporAvg:{},uamSub:{},ijazahSub:{},totalScore:0,averageScore:0,totalRaporSem15:null,globalRaporAvg:null,totalUm:null,globalUmAvg:null,totalIjazah:null,sklAverage:null,rank:1};
   let curIdx=h.findIndex(st=>st.id===g.id);
+
+  let classIjStats=(()=>{
+    let rAvg=avgNums(h.map(x=>x.globalRaporAvg));
+    let uAvg=avgNums(h.map(x=>x.globalUmAvg));
+    let ijList=h.map(x=>x.sklAverage).filter(v=>typeof v===`number`);
+    let ijAvg=ijList.length>0?avgNums(ijList,!0):null;
+    let ijMax=ijList.length>0?Math.max(...ijList):null;
+    let ijMin=ijList.length>0?Math.min(...ijList):null;
+    let lulusCnt=ijList.filter(v=>v>=75).length;
+    let missingUmCnt=h.filter(x=>x.globalUmAvg===null).length;
+    return{rAvg,uAvg,ijAvg,ijMax,ijMin,lulusCnt,missingUmCnt};
+  })();
 
   let v=score=>score>=90?{pred:`A`,label:`Sangat Baik`}:score>=80?{pred:`B`,label:`Baik`}:score>=75?{pred:`C`,label:`Cukup`}:{pred:`D`,label:`Perlu Bimbingan`};
   let y=()=>{window.print()};
+
+  let appendIjSheets=(X,wb,grpRows,clsLbl,withSummary)=>{
+    let safeName=nm=>String(nm||`Rekap`).replace(/[\\/?*[\]:]/g,` `).trim().slice(0,31)||`Rekap`;
+    let titleRows=[
+      [String(sp.name||``).toUpperCase()],
+      [`DAFTAR KOLEKTIF NILAI IJAZAH (DKNI) — ${clsLbl.toUpperCase()} (TA ${ta})`],
+      [`Formula Nilai Ijazah: ${wR}% Rata-Rata Rapor Sem 1-5 + ${wU}% Nilai UM (UAM)`],
+      []
+    ];
+    let hdr1=[`No`,`NISN`,`NIS`,`Nama Siswa`,`L/P`,`Kelas`,...Hr.map(s=>s.code),`Total Sem 1-5`,`Rerata Global Sem 1-5`,`Total UM`,`Rerata UM`,`Total Ijazah`,`Nilai Akhir Ijazah`,`Peringkat`,`Keterangan`];
+    let body1=grpRows.map((st,idx)=>[
+      idx+1,String(st.nisn||``),String(st.nis||`-`),st.name,st.gender,st.classRoom||clsLbl,
+      ...Hr.map(s=>st.ijazahSub[s.id]??`-`),
+      st.totalRaporSem15??`-`,st.globalRaporAvg??`-`,st.totalUm??`-`,st.globalUmAvg??`-`,st.totalIjazah??`-`,st.sklAverage??`-`,
+      st.rank,st.sklAverage===null?`Menunggu UM`:(st.sklAverage>=75?`LULUS`:`Belum Tuntas`)
+    ]);
+    let ftr1=[``,``,``,`Rata-Rata Kelas`,``,``,...Hr.map(sub=>avgNums(grpRows.map(x=>x.ijazahSub[sub.id]),!0)??`-`),avgNums(grpRows.map(x=>x.totalRaporSem15))??`-`,avgNums(grpRows.map(x=>x.globalRaporAvg))??`-`,avgNums(grpRows.map(x=>x.totalUm))??`-`,avgNums(grpRows.map(x=>x.globalUmAvg))??`-`,avgNums(grpRows.map(x=>x.totalIjazah))??`-`,avgNums(grpRows.map(x=>x.sklAverage),!0)??`-`,`-`,``];
+    let ws1=X.utils.aoa_to_sheet([...titleRows,hdr1,...body1,ftr1]);
+    X.utils.book_append_sheet(wb,ws1,safeName(withSummary?`Leger Nilai Ijazah`:clsLbl));
+
+    if(withSummary){
+      let hdr2=[`No`,`NISN`,`NIS`,`Nama Siswa`,`L/P`,`Kelas`,`Rerata Sem 1`,`Rerata Sem 2`,`Rerata Sem 3`,`Rerata Sem 4`,`Rerata Sem 5`,`Total Sem 1-5 (16 Mapel)`,`Rerata Global Sem 1-5`,`Total UM`,`Rerata UM`,`Total Ijazah`,`Nilai Akhir Ijazah`,`Peringkat`,`Keterangan`];
+      let body2=grpRows.map((st,idx)=>[
+        idx+1,String(st.nisn||``),String(st.nis||`-`),st.name,st.gender,st.classRoom||clsLbl,
+        st.semAvgs[`sem-1`]??`-`,st.semAvgs[`sem-2`]??`-`,st.semAvgs[`sem-3`]??`-`,st.semAvgs[`sem-4`]??`-`,st.semAvgs[`sem-5`]??`-`,
+        st.totalRaporSem15??`-`,st.globalRaporAvg??`-`,st.totalUm??`-`,st.globalUmAvg??`-`,st.totalIjazah??`-`,st.sklAverage??`-`,
+        st.rank,st.sklAverage===null?`Menunggu UM`:(st.sklAverage>=75?`LULUS`:`Belum Tuntas`)
+      ]);
+      let ftr2=[``,``,``,`Rata-Rata Kelas`,``,``,avgNums(grpRows.map(x=>x.semAvgs[`sem-1`]))??`-`,avgNums(grpRows.map(x=>x.semAvgs[`sem-2`]))??`-`,avgNums(grpRows.map(x=>x.semAvgs[`sem-3`]))??`-`,avgNums(grpRows.map(x=>x.semAvgs[`sem-4`]))??`-`,avgNums(grpRows.map(x=>x.semAvgs[`sem-5`]))??`-`,avgNums(grpRows.map(x=>x.totalRaporSem15))??`-`,avgNums(grpRows.map(x=>x.globalRaporAvg))??`-`,avgNums(grpRows.map(x=>x.totalUm))??`-`,avgNums(grpRows.map(x=>x.globalUmAvg))??`-`,avgNums(grpRows.map(x=>x.totalIjazah))??`-`,avgNums(grpRows.map(x=>x.sklAverage),!0)??`-`,`-`,``];
+      let ws2=X.utils.aoa_to_sheet([...titleRows,hdr2,...body2,ftr2]);
+      X.utils.book_append_sheet(wb,ws2,safeName(`Ringkasan Sem 1-5 & UM`));
+    }
+  };
+
   let b=fmt=>{
     if(fmt===`PDF`){
       m(`Membuka dialog Cetak / Simpan sebagai PDF...`);
@@ -243,10 +360,33 @@ Error generating stack: `+e.message+`
       return;
     }
     try{
-      let headers=[`No`,`NISN`,`NIS`,`Nama Siswa`,`L/P`,`Kelas`,...Hr.map(s=>s.code),`Total`,`Rata-Rata`,`Peringkat`];
       let X=window.XLSX;
+      if(t===`ijazah`&&X){
+        let wb=X.utils.book_new();
+        appendIjSheets(X,wb,h,activeClassLabel,!0);
+        if(isAdmin&&selClass===`ALL`&&classOptions.length>1){
+          classOptions.forEach(cn=>{
+            let subStds=allStds.filter(st=>(st.classRoom||``).trim().toLowerCase()===cn.trim().toLowerCase());
+            if(subStds.length>0)appendIjSheets(X,wb,computeGroup(subStds),cn,!1);
+          });
+        }
+        let out=X.write(wb,{bookType:`xlsx`,type:`array`});
+        let blob=new Blob([out],{type:`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`});
+        let url=URL.createObjectURL(blob);
+        let link=document.createElement(`a`);
+        link.href=url;
+        link.download=`Rekap_Nilai_Ijazah_${activeClassLabel.replace(/\s+/g,`_`)}.xlsx`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(()=>URL.revokeObjectURL(url),1e3);
+        m(`File Excel Rekap Nilai Ijazah (.xlsx) berhasil diunduh!`);
+        setTimeout(()=>m(null),3500);
+        return;
+      }
+      let headers=[`No`,`NISN`,`NIS`,`Nama Siswa`,`L/P`,`Kelas`,...Hr.map(s=>s.code),`Total`,`Rata-Rata`,`Peringkat`];
       if(X){
-        let aoa=[headers,...h.map(st=>[st.rank,String(st.nisn||``),String(st.nis||``),st.name,st.gender,st.classRoom||activeClassLabel,...Hr.map(s=>st.scores[s.id]??``),st.totalScore,st.averageScore,st.rank])];
+        let aoa=[headers,...h.map((st,idx)=>[idx+1,String(st.nisn||``),String(st.nis||``),st.name,st.gender,st.classRoom||activeClassLabel,...Hr.map(s=>st.scores[s.id]??``),st.totalScore,st.averageScore,st.rank])];
         let ws=X.utils.aoa_to_sheet(aoa);
         let wb=X.utils.book_new();
         X.utils.book_append_sheet(wb,ws,`Rekap Nilai`);
@@ -262,7 +402,7 @@ Error generating stack: `+e.message+`
         setTimeout(()=>URL.revokeObjectURL(url),1e3);
         m(`File Excel (.xlsx) berhasil diunduh!`);
       }else{
-        let rows=h.map(st=>[st.rank,`"${st.nisn}"`,`"${st.nis||``}"`,`"${st.name}"`,st.gender,`"${st.classRoom||activeClassLabel}"`,...Hr.map(s=>st.scores[s.id]??``),st.totalScore,st.averageScore,st.rank]);
+        let rows=h.map((st,idx)=>[idx+1,`"${st.nisn}"`,`"${st.nis||``}"`,`"${st.name}"`,st.gender,`"${st.classRoom||activeClassLabel}"`,...Hr.map(s=>st.scores[s.id]??``),st.totalScore,st.averageScore,st.rank]);
         let csv=[headers.join(`,`),...rows.map(rw=>rw.join(`,`))].join(`\n`);
         let blob=new Blob([`\uFEFF`+csv],{type:`text/csv;charset=utf-8;`});
         let url=URL.createObjectURL(blob);
@@ -306,14 +446,14 @@ Error generating stack: `+e.message+`
       (0,L.jsxs)(`div`,{className:`bg-white rounded-2xl border border-slate-200 p-5 md:p-6 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4`,children:[
         (0,L.jsxs)(`div`,{children:[
           (0,L.jsxs)(`div`,{className:`flex items-center gap-2 mb-1`,children:[
-            (0,L.jsx)(`span`,{className:`text-xs font-bold px-2.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800`,children:isAdmin?`Panel Admin • Pusat Rekap & Cetak Raport`:`Pusat Rekapitulasi & Cetak Dokumen`}),
+            (0,L.jsx)(`span`,{className:`text-xs font-bold px-2.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800`,children:isAdmin?`Panel Admin • Pusat Rekap & Nilai Ijazah`:`Pusat Rekapitulasi & Cetak Dokumen`}),
             (0,L.jsxs)(R,{variant:`success`,className:`text-[10px] gap-1 font-semibold`,children:[(0,L.jsx)(Ce,{className:`w-3 h-3`}),` Berkas Sah & Tervalidasi`]})
           ]}),
-          (0,L.jsx)(`h2`,{className:`text-xl md:text-2xl font-extrabold text-slate-900 tracking-tight`,children:`Cetak Leger, Rapor & Transkrip Kelulusan (SKL)`}),
-          (0,L.jsxs)(`p`,{className:`text-xs text-slate-500 mt-1`,children:[`Cetak Buku Leger Nilai Kolektif, Lembar Rapor Siswa Perorangan, dan Transkrip Kelulusan (SKL) untuk `,activeClassLabel,`.`]})
+          (0,L.jsxs)(`h2`,{className:`text-xl md:text-2xl font-extrabold text-slate-900 tracking-tight`,children:[`Rekap Nilai Ijazah, Leger, Rapor & SKL (`,activeClassLabel,`)`]}),
+          (0,L.jsx)(`p`,{className:`text-xs text-slate-500 mt-1`,children:`Rekapitulasi total rata-rata global Semester 1–5, rata-rata UM (UAM), dan perhitungan Nilai Akhir Ijazah kolektif per kelas.`})
         ]}),
         (0,L.jsxs)(`div`,{className:`flex flex-wrap items-center gap-2.5 shrink-0`,children:[
-          (0,L.jsxs)(z,{variant:`outline`,onClick:()=>b(`Excel (.xlsx)`),className:`text-xs font-semibold gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50 cursor-pointer`,children:[(0,L.jsx)(Ae,{className:`w-4 h-4 text-emerald-700`}),`Ekspor Excel`]}),
+          (0,L.jsxs)(z,{variant:`outline`,onClick:()=>b(`Excel (.xlsx)`),className:`text-xs font-semibold gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50 cursor-pointer`,children:[(0,L.jsx)(Ae,{className:`w-4 h-4 text-emerald-700`}),`Ekspor Excel (.xlsx)`]}),
           (0,L.jsxs)(z,{variant:`outline`,onClick:()=>b(`PDF`),className:`text-xs font-semibold gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50 cursor-pointer`,children:[(0,L.jsx)(Ae,{className:`w-4 h-4 text-blue-700`}),`Cetak / Simpan PDF`]}),
           (0,L.jsxs)(z,{onClick:y,className:`text-xs font-semibold gap-1.5 shadow-md bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer`,children:[(0,L.jsx)(ot,{className:`w-4 h-4`}),`Cetak ke Printer (Ctrl + P)`]})
         ]})
@@ -326,9 +466,10 @@ Error generating stack: `+e.message+`
         (0,L.jsxs)(`div`,{className:`flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4`,children:[
           (0,L.jsxs)(`div`,{className:`flex flex-wrap items-center gap-2`,children:[
             (0,L.jsx)(`span`,{className:`text-xs font-bold text-slate-500 uppercase tracking-wider mr-1`,children:`Pilih Dokumen:`}),
-            (0,L.jsxs)(z,{type:`button`,size:`sm`,variant:t===`leger`?`default`:`outline`,onClick:()=>n(`leger`),className:I(`text-xs h-9 gap-1.5 cursor-pointer`,t===`leger`&&`bg-emerald-600 text-white shadow-sm`),children:[(0,L.jsx)(Pe,{className:`w-3.5 h-3.5`}),(0,L.jsx)(`span`,{children:`1. Buku Leger Nilai (Kolektif)`})]}),
-            (0,L.jsxs)(z,{type:`button`,size:`sm`,variant:t===`rapor`?`default`:`outline`,onClick:()=>n(`rapor`),className:I(`text-xs h-9 gap-1.5 cursor-pointer`,t===`rapor`&&`bg-emerald-600 text-white shadow-sm`),children:[(0,L.jsx)(Ie,{className:`w-3.5 h-3.5`}),(0,L.jsx)(`span`,{children:`2. Cetak Rapor Siswa (Perorangan)`})]}),
-            (0,L.jsxs)(z,{type:`button`,size:`sm`,variant:t===`skl`?`default`:`outline`,onClick:()=>n(`skl`),className:I(`text-xs h-9 gap-1.5 cursor-pointer`,t===`skl`&&`bg-emerald-600 text-white shadow-sm`),children:[(0,L.jsx)(fe,{className:`w-3.5 h-3.5`}),(0,L.jsx)(`span`,{children:`3. Transkrip Kelulusan (SKL)`})]})
+            isAdmin&&(0,L.jsxs)(z,{type:`button`,size:`sm`,variant:t===`ijazah`?`default`:`outline`,onClick:()=>n(`ijazah`),className:I(`text-xs h-9 gap-1.5 cursor-pointer`,t===`ijazah`&&`bg-emerald-600 text-white shadow-sm`),children:[(0,L.jsx)(fe,{className:`w-3.5 h-3.5`}),(0,L.jsx)(`span`,{children:`Rekap Nilai Ijazah (Per Kelas)`})]}),
+            (0,L.jsxs)(z,{type:`button`,size:`sm`,variant:t===`leger`?`default`:`outline`,onClick:()=>n(`leger`),className:I(`text-xs h-9 gap-1.5 cursor-pointer`,t===`leger`&&`bg-emerald-600 text-white shadow-sm`),children:[(0,L.jsx)(Pe,{className:`w-3.5 h-3.5`}),(0,L.jsx)(`span`,{children:`Buku Leger (Per Semester)`})]}),
+            (0,L.jsxs)(z,{type:`button`,size:`sm`,variant:t===`rapor`?`default`:`outline`,onClick:()=>n(`rapor`),className:I(`text-xs h-9 gap-1.5 cursor-pointer`,t===`rapor`&&`bg-emerald-600 text-white shadow-sm`),children:[(0,L.jsx)(Ie,{className:`w-3.5 h-3.5`}),(0,L.jsx)(`span`,{children:`Cetak Rapor (Perorangan)`})]}),
+            (0,L.jsxs)(z,{type:`button`,size:`sm`,variant:t===`skl`?`default`:`outline`,onClick:()=>n(`skl`),className:I(`text-xs h-9 gap-1.5 cursor-pointer`,t===`skl`&&`bg-emerald-600 text-white shadow-sm`),children:[(0,L.jsx)(Be,{className:`w-3.5 h-3.5`}),(0,L.jsx)(`span`,{children:`Transkrip Kelulusan (SKL)`})]})
           ]}),
           (0,L.jsxs)(`div`,{className:`flex flex-wrap items-center gap-2.5 w-full lg:w-auto`,children:[
             isAdmin&&(0,L.jsxs)(`div`,{className:`flex items-center gap-1.5`,children:[
@@ -338,16 +479,44 @@ Error generating stack: `+e.message+`
                 classOptions.map(c=>(0,L.jsx)(`option`,{value:c,children:c},c))
               ]})
             ]}),
-            (0,L.jsxs)(`div`,{className:`flex items-center gap-1.5`,children:[
+            (t===`leger`||t===`rapor`)&&(0,L.jsxs)(`div`,{className:`flex items-center gap-1.5`,children:[
               (0,L.jsx)(`label`,{className:`text-xs font-semibold text-slate-700 shrink-0`,children:`Semester:`}),
               (0,L.jsx)(`select`,{value:selSem,onChange:ev=>setSelSem(ev.target.value),className:`text-xs py-1.5 px-2.5 rounded-lg border border-slate-300 bg-white font-semibold text-slate-800`,children:Wr.map(w=>(0,L.jsxs)(`option`,{value:w.id,children:[w.label,` (`,w.gradeLabel,`)`]},w.id))})
             ]})
           ]})
         ]}),
+        isAdmin&&(t===`ijazah`||t===`skl`)&&(0,L.jsxs)(`div`,{className:`pt-3 border-t border-slate-100 flex flex-col xl:flex-row xl:items-center justify-between gap-3`,children:[
+          (0,L.jsxs)(`div`,{className:`flex flex-wrap items-center gap-2 text-xs`,children:[
+            (0,L.jsx)(`span`,{className:`font-bold text-emerald-900 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200`,children:`Rumus Nilai Ijazah:`}),
+            (0,L.jsxs)(`div`,{className:`flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200`,children:[
+              (0,L.jsx)(`span`,{className:`text-slate-600 font-medium`,children:`Bobot Sem 1–5:`}),
+              (0,L.jsx)(`input`,{type:`number`,min:0,max:100,value:wR,onChange:ev=>{let p=Math.min(100,Math.max(0,Number(ev.target.value)||0));updateIjCfg({raporWeight:p,umWeight:100-p})},className:`w-14 px-1.5 py-0.5 text-center font-mono font-bold rounded border border-slate-300 bg-white text-slate-900`}),
+              (0,L.jsx)(`span`,{className:`font-bold text-slate-700`,children:`%`})
+            ]}),
+            (0,L.jsx)(`span`,{className:`font-bold text-slate-400`,children:`+`}),
+            (0,L.jsxs)(`div`,{className:`flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200`,children:[
+              (0,L.jsx)(`span`,{className:`text-slate-600 font-medium`,children:`Bobot UM:`}),
+              (0,L.jsx)(`input`,{type:`number`,min:0,max:100,value:wU,onChange:ev=>{let p=Math.min(100,Math.max(0,Number(ev.target.value)||0));updateIjCfg({umWeight:p,raporWeight:100-p})},className:`w-14 px-1.5 py-0.5 text-center font-mono font-bold rounded border border-slate-300 bg-white text-slate-900`}),
+              (0,L.jsx)(`span`,{className:`font-bold text-slate-700`,children:`%`})
+            ]}),
+            (wR!==60||wU!==40)&&(0,L.jsx)(`button`,{type:`button`,onClick:()=>updateIjCfg({raporWeight:60,umWeight:40}),className:`text-[11px] font-semibold text-emerald-700 hover:underline cursor-pointer`,children:`Reset 60%:40%`}),
+            (0,L.jsxs)(`div`,{className:`flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200`,children:[
+              (0,L.jsx)(`span`,{className:`text-slate-600 font-medium`,children:`Pembulatan:`}),
+              (0,L.jsxs)(`select`,{value:ijCfg.rounding,onChange:ev=>updateIjCfg({rounding:ev.target.value}),className:`font-semibold text-slate-800 bg-transparent focus:outline-none`,children:[
+                (0,L.jsx)(`option`,{value:`1dec`,children:`1 Desimal (84.6)`}),
+                (0,L.jsx)(`option`,{value:`int`,children:`Bulat Satuan (85)`})
+              ]})
+            ]})
+          ]}),
+          t===`ijazah`&&(0,L.jsxs)(`div`,{className:`inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 gap-0.5 self-start`,children:[
+            (0,L.jsx)(`button`,{type:`button`,onClick:()=>setIjMode(`mapel`),className:I(`px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer`,ijMode===`mapel`?`bg-emerald-600 text-white shadow-2xs`:`text-slate-600 hover:text-slate-900`),children:`Leger 16 Mapel + Rekap Ijazah`}),
+            (0,L.jsx)(`button`,{type:`button`,onClick:()=>setIjMode(`ringkasan`),className:I(`px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer`,ijMode===`ringkasan`?`bg-emerald-600 text-white shadow-2xs`:`text-slate-600 hover:text-slate-900`),children:`Ringkasan Sem 1–5, UM & Ijazah`})
+          ]})
+        ]}),
         (t===`rapor`||t===`skl`)&&(0,L.jsxs)(`div`,{className:`pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3`,children:[
           (0,L.jsxs)(`div`,{className:`flex flex-wrap items-center gap-2`,children:[
             (0,L.jsx)(`label`,{className:`text-xs font-bold text-emerald-800 shrink-0`,children:`Pilih Siswa:`}),
-            h.length===0?(0,L.jsx)(`span`,{className:`text-xs text-red-600 font-semibold`,children:`Belum ada data siswa di kelas ini.` }):(0,L.jsx)(`select`,{value:g.id,onChange:ev=>i(ev.target.value),className:`text-xs py-1.5 px-3 rounded-lg border border-emerald-300 bg-emerald-50/40 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-bold text-slate-900 min-w-[240px]`,children:h.map(st=>(0,L.jsxs)(`option`,{value:st.id,children:[st.rank,`. `,st.name,` (NISN: `,st.nisn,` • Rerata: `,t===`skl`?st.sklAverage:st.averageScore,`)`]},st.id))}),
+            h.length===0?(0,L.jsx)(`span`,{className:`text-xs text-red-600 font-semibold`,children:`Belum ada data siswa di kelas ini.` }):(0,L.jsx)(`select`,{value:g.id,onChange:ev=>i(ev.target.value),className:`text-xs py-1.5 px-3 rounded-lg border border-emerald-300 bg-emerald-50/40 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-bold text-slate-900 min-w-[240px]`,children:h.map(st=>(0,L.jsxs)(`option`,{value:st.id,children:[st.rank,`. `,st.name,` (NISN: `,st.nisn,` • Rerata: `,t===`skl`?(st.sklAverage??`-`):st.averageScore,`)`]},st.id))}),
             h.length>1&&(0,L.jsxs)(`div`,{className:`flex items-center gap-1`,children:[
               (0,L.jsx)(`button`,{type:`button`,disabled:curIdx<=0,onClick:()=>curIdx>0&&i(h[curIdx-1].id),className:`px-2.5 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 text-xs font-semibold cursor-pointer`,children:`◀ Sebelumnya`}),
               (0,L.jsx)(`button`,{type:`button`,disabled:curIdx>=h.length-1,onClick:()=>curIdx<h.length-1&&i(h[curIdx+1].id),className:`px-2.5 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 text-xs font-semibold cursor-pointer`,children:`Berikutnya ▶`})
@@ -365,6 +534,10 @@ Error generating stack: `+e.message+`
           ]})
         ]})
       ]}),
+      t===`ijazah`&&wU>0&&h.length>0&&classIjStats.missingUmCnt>0&&(0,L.jsxs)(`div`,{className:`p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2`,children:[
+        (0,L.jsx)(wt,{className:`w-4 h-4 text-amber-600 shrink-0 mt-0.5`}),
+        (0,L.jsxs)(`div`,{children:[`Terdapat `,(0,L.jsxs)(`strong`,{children:[classIjStats.missingUmCnt,` siswa`]}),` yang nilai `,(0,L.jsx)(`strong`,{children:`UM (UAM)`}),`-nya belum diinput (ditampilkan `,`-`,`). Nilai Akhir Ijazah otomatis terhitung penuh setelah nilai UM diisi, atau ubah `,(0,L.jsx)(`strong`,{children:`Bobot UM ke 0%`}),` bila ingin melihat simulasi murni dari Rapor Sem 1–5.`]})
+      ]}),
       (0,L.jsxs)(`div`,{className:`flex flex-wrap items-center justify-between text-xs text-slate-600 px-3 py-2 bg-slate-100/70 rounded-lg`,children:[
         (0,L.jsxs)(`div`,{className:`flex items-center gap-4`,children:[
           (0,L.jsx)(`span`,{className:`font-semibold text-slate-700`,children:`Pengaturan Tampilan Cetak:`}),
@@ -374,7 +547,7 @@ Error generating stack: `+e.message+`
         (0,L.jsxs)(`div`,{className:`text-[11px] text-slate-500`,children:[`Titimangsa: `,(0,L.jsx)(`strong`,{children:s})]})
       ]})
     ]}),
-    (0,L.jsxs)(`div`,{className:`print-container bg-white rounded-2xl border border-slate-200/90 shadow-lg p-6 md:p-10 text-slate-900 mx-auto max-w-[1400px]`,children:[
+    (0,L.jsxs)(`div`,{className:`print-container bg-white rounded-2xl border border-slate-200/90 shadow-lg p-6 md:p-10 text-slate-900 mx-auto max-w-[1450px]`,children:[
       (0,L.jsx)(`div`,{className:`border-b-4 border-double border-slate-900 pb-4 mb-6`,children:(0,L.jsxs)(`div`,{className:`flex items-center justify-between gap-4`,children:[
         sp.logoUrl?(0,L.jsx)(`img`,{src:sp.logoUrl,alt:`Logo Madrasah`,className:`w-16 h-16 object-contain shrink-0`}):(0,L.jsx)(`div`,{className:`w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-800 to-emerald-600 text-white flex items-center justify-center font-bold text-2xl shrink-0 shadow-sm`,children:(0,L.jsx)(ct,{className:`w-9 h-9`})}),
         (0,L.jsxs)(`div`,{className:`text-center flex-1`,children:[
@@ -389,6 +562,151 @@ Error generating stack: `+e.message+`
           (0,L.jsx)(`span`,{className:`text-[8px] text-slate-500`,children:sp.accreditationLabel})
         ]})
       ]})}),
+      t===`ijazah`&&(0,L.jsxs)(`div`,{className:`space-y-6`,children:[
+        (0,L.jsxs)(`div`,{className:`text-center space-y-1`,children:[
+          (0,L.jsx)(`h3`,{className:`text-lg md:text-xl font-black uppercase tracking-tight text-slate-900 underline decoration-slate-400 decoration-2 underline-offset-4`,children:`DAFTAR KOLEKTIF NILAI IJAZAH (DKNI) & REKAP KELULUSAN`}),
+          (0,L.jsxs)(`p`,{className:`text-xs font-semibold text-slate-600 uppercase`,children:[activeClassLabel,` • TAHUN AJARAN `,ta,` • FORMULA: `,wR,`% RERATA SEM 1–5 + `,wU,`% NILAI UM`]})
+        ]}),
+        (0,L.jsxs)(`div`,{className:`grid grid-cols-2 md:grid-cols-5 gap-2.5 p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs`,children:[
+          (0,L.jsxs)(`div`,{children:[(0,L.jsx)(`span`,{className:`text-slate-400 block text-[10px] uppercase font-semibold`,children:`Rombel / Siswa:`}),(0,L.jsxs)(`span`,{className:`font-bold text-slate-900`,children:[activeClassLabel,` (`,h.length,` Siswa)`]})]}),
+          (0,L.jsxs)(`div`,{children:[(0,L.jsx)(`span`,{className:`text-slate-400 block text-[10px] uppercase font-semibold`,children:`Rerata Global Sem 1–5:`}),(0,L.jsx)(`span`,{className:`font-mono font-bold text-blue-800 text-sm`,children:classIjStats.rAvg??`-`})]}),
+          (0,L.jsxs)(`div`,{children:[(0,L.jsx)(`span`,{className:`text-slate-400 block text-[10px] uppercase font-semibold`,children:`Rerata Nilai UM:`}),(0,L.jsx)(`span`,{className:`font-mono font-bold text-purple-800 text-sm`,children:classIjStats.uAvg??`-`})]}),
+          (0,L.jsxs)(`div`,{children:[(0,L.jsx)(`span`,{className:`text-slate-400 block text-[10px] uppercase font-semibold`,children:`Rerata Nilai Ijazah:`}),(0,L.jsx)(`span`,{className:`font-mono font-black text-emerald-800 text-sm`,children:classIjStats.ijAvg??`-`})]}),
+          (0,L.jsxs)(`div`,{children:[(0,L.jsx)(`span`,{className:`text-slate-400 block text-[10px] uppercase font-semibold`,children:`Tertinggi / Terendah:`}),(0,L.jsxs)(`span`,{className:`font-mono font-bold text-slate-800`,children:[classIjStats.ijMax??`-`,` / `,classIjStats.ijMin??`-`,` (`,classIjStats.lulusCnt,` Lulus)`]})]})
+        ]}),
+        ijMode===`mapel`&&(0,L.jsx)(`div`,{className:`overflow-x-auto border border-slate-300 rounded-lg`,children:(0,L.jsxs)(`table`,{className:`w-full text-center text-xs border-collapse font-sans`,children:[
+          (0,L.jsxs)(`thead`,{children:[
+            (0,L.jsxs)(`tr`,{className:`bg-slate-100 text-slate-800 font-bold border-b border-slate-300`,children:[
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-8 border-r border-slate-300 p-2 text-center`,children:`No`}),
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-24 border-r border-slate-300 p-2 text-left`,children:`NISN`}),
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-48 border-r border-slate-300 p-2 text-left`,children:`Nama Siswa`}),
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-8 border-r border-slate-300 p-2 text-center`,children:`L/P`}),
+              selClass===`ALL`&&(0,L.jsx)(`th`,{rowSpan:2,className:`w-24 border-r border-slate-300 p-2 text-center`,children:`Kelas`}),
+              (0,L.jsxs)(`th`,{colSpan:16,className:`border-r border-slate-300 py-1.5 px-2 bg-emerald-50 text-emerald-950 font-bold`,children:[`Nilai Ijazah per Mata Pelajaran (`,wR,`% Sem 1–5 + `,wU,`% UM)`]}),
+              (0,L.jsx)(`th`,{colSpan:2,className:`border-r border-slate-300 py-1.5 px-2 bg-blue-50 text-blue-950 font-bold`,children:`Rekap Global Sem 1–5`}),
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-16 border-r border-slate-300 p-1.5 bg-purple-50 text-purple-950 font-bold`,children:`Rerata UM`}),
+              (0,L.jsx)(`th`,{colSpan:2,className:`border-r border-slate-300 py-1.5 px-2 bg-emerald-100 text-emerald-950 font-extrabold`,children:`Hasil Nilai Ijazah`}),
+              l&&(0,L.jsx)(`th`,{rowSpan:2,className:`w-12 border-r border-slate-300 p-1.5 bg-amber-100 text-amber-900 font-bold`,children:`Rank`}),
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-20 p-1.5 bg-slate-200/80 font-bold`,children:`Status`})
+            ]}),
+            (0,L.jsxs)(`tr`,{className:`bg-slate-50 border-b border-slate-300 text-[10px]`,children:[
+              Hr.map(sub=>(0,L.jsxs)(`th`,{className:`w-10 border-r border-slate-300 py-1 px-0.5 text-center font-bold`,title:sub.name,children:[(0,L.jsx)(`div`,{children:sub.code}),(0,L.jsx)(`div`,{className:`text-[9px] text-slate-400 font-normal`,children:sub.shortName})]},sub.id)),
+              (0,L.jsx)(`th`,{className:`w-14 border-r border-slate-300 py-1 px-1 bg-blue-50/50 text-blue-900 font-bold`,children:`Total`}),
+              (0,L.jsx)(`th`,{className:`w-14 border-r border-slate-300 py-1 px-1 bg-blue-50/50 text-blue-900 font-bold`,children:`Rerata`}),
+              (0,L.jsx)(`th`,{className:`w-14 border-r border-slate-300 py-1 px-1 bg-emerald-50 text-emerald-950 font-bold`,children:`Total`}),
+              (0,L.jsx)(`th`,{className:`w-16 border-r border-slate-300 py-1 px-1 bg-emerald-100/70 text-emerald-950 font-black`,children:`Nilai Akhir`})
+            ]})
+          ]}),
+          (0,L.jsx)(`tbody`,{className:`divide-y divide-slate-300`,children:h.length===0?(0,L.jsx)(`tr`,{children:(0,L.jsx)(`td`,{colSpan:25+(selClass===`ALL`?1:0)+(l?1:0),className:`py-8 text-center text-slate-400 text-xs`,children:`Belum ada data siswa terdaftar di kelas ini.`})}):h.map((st,idx)=>(0,L.jsxs)(`tr`,{className:idx%2===1?`bg-slate-50/40`:`bg-white`,children:[
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 text-center font-mono`,children:idx+1}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 text-left font-mono text-[11px] text-slate-600`,children:st.nisn}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 text-left font-bold text-slate-900 truncate max-w-[180px]`,children:st.name}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 text-center font-semibold text-[10px]`,children:st.gender}),
+            selClass===`ALL`&&(0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 text-[10px] font-semibold text-slate-700`,children:st.classRoom}),
+            Hr.map(sub=>{let val=st.ijazahSub[sub.id],rv=st.raporAvg[sub.id],uv=st.uamSub[sub.id],low=typeof val===`number`&&val<sub.kkm;return(0,L.jsx)(`td`,{title:`${sub.name} — Sem 1-5: ${rv??`-`} | UM: ${uv??`-`} | Ijazah: ${val??`-`}`,className:I(`p-1 border-r border-slate-300 font-mono text-center text-xs font-semibold`,low&&`text-red-600 font-bold bg-red-50`),children:val??`-`},sub.id)}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono text-[11px] text-blue-900 bg-blue-50/20`,children:st.totalRaporSem15??`-`}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono font-bold text-blue-900 bg-blue-50/40`,children:st.globalRaporAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono font-bold text-purple-900 bg-purple-50/30`,children:st.globalUmAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono text-[11px] font-semibold text-emerald-900 bg-emerald-50/30`,children:st.totalIjazah??`-`}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono font-black text-emerald-950 bg-emerald-100/60`,children:st.sklAverage??`-`}),
+            l&&(0,L.jsxs)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono font-black text-amber-900 bg-amber-50`,children:[`#`,st.rank]}),
+            (0,L.jsx)(`td`,{className:`p-1.5 text-center text-[10px] font-bold`,children:st.sklAverage===null?(0,L.jsx)(`span`,{className:`text-amber-700`,children:`Menunggu UM`}):st.sklAverage>=75?(0,L.jsx)(`span`,{className:`text-emerald-800`,children:`LULUS`}):(0,L.jsx)(`span`,{className:`text-red-600`,children:`Belum Tuntas`})})
+          ]},st.id))}),
+          h.length>0&&(0,L.jsx)(`tfoot`,{children:(0,L.jsxs)(`tr`,{className:`bg-slate-100 font-bold border-t-2 border-slate-400 text-slate-900`,children:[
+            (0,L.jsx)(`td`,{colSpan:4+(selClass===`ALL`?1:0),className:`p-2 text-right border-r border-slate-300`,children:`Rata-Rata Kelas:`}),
+            Hr.map(sub=>(0,L.jsx)(`td`,{className:`p-1 border-r border-slate-300 font-mono text-[11px] text-emerald-900`,children:avgNums(h.map(x=>x.ijazahSub[sub.id]),!0)??`-`},sub.id)),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono text-[11px] text-blue-900`,children:avgNums(h.map(x=>x.totalRaporSem15))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono text-blue-950`,children:classIjStats.rAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono text-purple-950`,children:classIjStats.uAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono text-[11px] text-emerald-900`,children:avgNums(h.map(x=>x.totalIjazah))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300 font-mono font-black text-emerald-950 bg-emerald-200/60`,children:classIjStats.ijAvg??`-`}),
+            l&&(0,L.jsx)(`td`,{className:`p-1.5 border-r border-slate-300`,children:`-`}),
+            (0,L.jsxs)(`td`,{className:`p-1.5 text-[10px] text-emerald-800`,children:[classIjStats.lulusCnt,`/`,h.length,` Lulus`]})
+          ]})})
+        ]})}),
+        ijMode===`ringkasan`&&(0,L.jsx)(`div`,{className:`overflow-x-auto border border-slate-300 rounded-lg`,children:(0,L.jsxs)(`table`,{className:`w-full text-center text-xs border-collapse font-sans`,children:[
+          (0,L.jsxs)(`thead`,{children:[
+            (0,L.jsxs)(`tr`,{className:`bg-slate-100 text-slate-800 font-bold border-b border-slate-300`,children:[
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-8 border-r border-slate-300 p-2`,children:`No`}),
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-24 border-r border-slate-300 p-2 text-left`,children:`NISN`}),
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-52 border-r border-slate-300 p-2 text-left`,children:`Nama Siswa`}),
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-8 border-r border-slate-300 p-2`,children:`L/P`}),
+              selClass===`ALL`&&(0,L.jsx)(`th`,{rowSpan:2,className:`w-24 border-r border-slate-300 p-2`,children:`Kelas`}),
+              (0,L.jsx)(`th`,{colSpan:5,className:`border-r border-slate-300 py-1.5 px-2 bg-slate-200/70 text-slate-900`,children:`Rata-Rata Rapor Tiap Semester`}),
+              (0,L.jsxs)(`th`,{colSpan:2,className:`border-r border-slate-300 py-1.5 px-2 bg-blue-50 text-blue-950`,children:[`Rekap Global Sem 1–5 (`,wR,`%)`]}),
+              (0,L.jsxs)(`th`,{colSpan:2,className:`border-r border-slate-300 py-1.5 px-2 bg-purple-50 text-purple-950`,children:[`Rekap Nilai UM (`,wU,`%)`]}),
+              (0,L.jsx)(`th`,{colSpan:2,className:`border-r border-slate-300 py-1.5 px-2 bg-emerald-100 text-emerald-950 font-extrabold`,children:`Hasil Nilai Ijazah`}),
+              l&&(0,L.jsx)(`th`,{rowSpan:2,className:`w-14 border-r border-slate-300 p-2 bg-amber-100 text-amber-900`,children:`Peringkat`}),
+              (0,L.jsx)(`th`,{rowSpan:2,className:`w-24 p-2 bg-slate-200/80`,children:`Keterangan`})
+            ]}),
+            (0,L.jsxs)(`tr`,{className:`bg-slate-50 border-b border-slate-300 text-[10px] font-bold`,children:[
+              (0,L.jsx)(`th`,{className:`w-14 border-r border-slate-300 py-1.5`,children:`Sem 1`}),
+              (0,L.jsx)(`th`,{className:`w-14 border-r border-slate-300 py-1.5`,children:`Sem 2`}),
+              (0,L.jsx)(`th`,{className:`w-14 border-r border-slate-300 py-1.5`,children:`Sem 3`}),
+              (0,L.jsx)(`th`,{className:`w-14 border-r border-slate-300 py-1.5`,children:`Sem 4`}),
+              (0,L.jsx)(`th`,{className:`w-14 border-r border-slate-300 py-1.5`,children:`Sem 5`}),
+              (0,L.jsx)(`th`,{className:`w-16 border-r border-slate-300 py-1.5 bg-blue-50/50 text-blue-900`,children:`Total 16 Mapel`}),
+              (0,L.jsx)(`th`,{className:`w-16 border-r border-slate-300 py-1.5 bg-blue-50/80 text-blue-950`,children:`Rerata Global`}),
+              (0,L.jsx)(`th`,{className:`w-16 border-r border-slate-300 py-1.5 bg-purple-50/40 text-purple-900`,children:`Total UM`}),
+              (0,L.jsx)(`th`,{className:`w-16 border-r border-slate-300 py-1.5 bg-purple-50/70 text-purple-950`,children:`Rerata UM`}),
+              (0,L.jsx)(`th`,{className:`w-16 border-r border-slate-300 py-1.5 bg-emerald-50 text-emerald-900`,children:`Total Ijazah`}),
+              (0,L.jsx)(`th`,{className:`w-20 border-r border-slate-300 py-1.5 bg-emerald-100/80 text-emerald-950 font-black`,children:`Nilai Akhir`})
+            ]})
+          ]}),
+          (0,L.jsx)(`tbody`,{className:`divide-y divide-slate-300`,children:h.length===0?(0,L.jsx)(`tr`,{children:(0,L.jsx)(`td`,{colSpan:16+(selClass===`ALL`?1:0)+(l?1:0),className:`py-8 text-center text-slate-400 text-xs`,children:`Belum ada data siswa terdaftar di kelas ini.`})}):h.map((st,idx)=>(0,L.jsxs)(`tr`,{className:idx%2===1?`bg-slate-50/40`:`bg-white`,children:[
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:idx+1}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 text-left font-mono text-[11px] text-slate-600`,children:st.nisn}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 text-left font-bold text-slate-900`,children:st.name}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-semibold text-[10px]`,children:st.gender}),
+            selClass===`ALL`&&(0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 text-[11px] font-semibold`,children:st.classRoom}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:st.semAvgs[`sem-1`]??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:st.semAvgs[`sem-2`]??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:st.semAvgs[`sem-3`]??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:st.semAvgs[`sem-4`]??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:st.semAvgs[`sem-5`]??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono text-blue-900 bg-blue-50/20`,children:st.totalRaporSem15??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono font-bold text-blue-950 bg-blue-50/50`,children:st.globalRaporAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono text-purple-900 bg-purple-50/20`,children:st.totalUm??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono font-bold text-purple-950 bg-purple-50/50`,children:st.globalUmAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono font-semibold text-emerald-900 bg-emerald-50/30`,children:st.totalIjazah??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono font-black text-emerald-950 bg-emerald-100/70 text-sm`,children:st.sklAverage??`-`}),
+            l&&(0,L.jsxs)(`td`,{className:`p-2 border-r border-slate-300 font-mono font-black text-amber-900 bg-amber-50`,children:[`#`,st.rank]}),
+            (0,L.jsx)(`td`,{className:`p-2 text-center text-[11px] font-bold`,children:st.sklAverage===null?(0,L.jsx)(`span`,{className:`text-amber-700`,children:`Menunggu UM`}):st.sklAverage>=75?(0,L.jsx)(`span`,{className:`text-emerald-800`,children:`LULUS`}):(0,L.jsx)(`span`,{className:`text-red-600`,children:`Belum Tuntas`})})
+          ]},st.id))}),
+          h.length>0&&(0,L.jsx)(`tfoot`,{children:(0,L.jsxs)(`tr`,{className:`bg-slate-100 font-bold border-t-2 border-slate-400 text-slate-900`,children:[
+            (0,L.jsx)(`td`,{colSpan:4+(selClass===`ALL`?1:0),className:`p-2 text-right border-r border-slate-300`,children:`Rata-Rata Kelas:`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:avgNums(h.map(x=>x.semAvgs[`sem-1`]))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:avgNums(h.map(x=>x.semAvgs[`sem-2`]))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:avgNums(h.map(x=>x.semAvgs[`sem-3`]))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:avgNums(h.map(x=>x.semAvgs[`sem-4`]))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono`,children:avgNums(h.map(x=>x.semAvgs[`sem-5`]))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono text-blue-900`,children:avgNums(h.map(x=>x.totalRaporSem15))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono text-blue-950`,children:classIjStats.rAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono text-purple-900`,children:avgNums(h.map(x=>x.totalUm))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono text-purple-950`,children:classIjStats.uAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono text-emerald-900`,children:avgNums(h.map(x=>x.totalIjazah))??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300 font-mono font-black text-emerald-950 bg-emerald-200/70`,children:classIjStats.ijAvg??`-`}),
+            l&&(0,L.jsx)(`td`,{className:`p-2 border-r border-slate-300`,children:`-`}),
+            (0,L.jsxs)(`td`,{className:`p-2 text-[10px] text-emerald-800`,children:[classIjStats.lulusCnt,`/`,h.length,` Lulus`]})
+          ]})})
+        ]})}),
+        (0,L.jsxs)(`div`,{className:`pt-8 flex justify-between items-end text-xs`,children:[
+          (0,L.jsxs)(`div`,{className:`text-center w-64`,children:[
+            (0,L.jsx)(`p`,{children:`Mengetahui,`}),
+            (0,L.jsx)(`p`,{className:`font-bold`,children:`Kepala Madrasah`}),
+            (0,L.jsx)(`div`,{className:`h-20 flex items-center justify-center`,children:d&&(0,L.jsx)(`div`,{className:`border border-emerald-600 bg-emerald-50 px-3 py-1 rounded text-[10px] text-emerald-800 font-mono font-semibold`,children:`[Tanda Tangan Digital Terverifikasi]`})}),
+            (0,L.jsx)(`p`,{className:`font-bold underline text-slate-900`,children:sp.headmasterName}),
+            (0,L.jsxs)(`p`,{className:`text-[11px] text-slate-500 font-mono`,children:[`NIP. `,sp.headmasterNip]})
+          ]}),
+          (0,L.jsxs)(`div`,{className:`text-center w-64`,children:[
+            (0,L.jsx)(`p`,{children:s}),
+            (0,L.jsx)(`p`,{className:`font-bold`,children:selClass===`ALL`?`Koordinator Kurikulum / Admin`:`Wali Kelas ${activeClassLabel}`}),
+            (0,L.jsx)(`div`,{className:`h-20 flex items-center justify-center`,children:d&&(0,L.jsx)(`div`,{className:`border border-emerald-600 bg-emerald-50 px-3 py-1 rounded text-[10px] text-emerald-800 font-mono font-semibold`,children:`[Tanda Tangan Digital Terverifikasi]`})}),
+            (0,L.jsx)(`p`,{className:`font-bold underline text-slate-900`,children:waliInfo.name}),
+            (0,L.jsxs)(`p`,{className:`text-[11px] text-slate-500 font-mono`,children:[`NIP. `,waliInfo.nip]})
+          ]})
+        ]})
+      ]}),
       t===`leger`&&(0,L.jsxs)(`div`,{className:`space-y-6`,children:[
         (0,L.jsxs)(`div`,{className:`text-center space-y-1`,children:[
           (0,L.jsx)(`h3`,{className:`text-lg md:text-xl font-black uppercase tracking-tight text-slate-900 underline decoration-slate-400 decoration-2 underline-offset-4`,children:`BUKU LEGER NILAI HASIL BELAJAR SISWA`}),
@@ -532,34 +850,34 @@ Error generating stack: `+e.message+`
         ]}),
         (0,L.jsxs)(`div`,{className:`p-4 rounded-xl bg-emerald-50 border-2 border-emerald-400 text-center space-y-1`,children:[
           (0,L.jsx)(`span`,{className:`text-xs font-semibold text-emerald-800 uppercase tracking-widest`,children:`Berdasarkan Kriteria Kelulusan Madrasah Dinyatakan:`}),
-          (0,L.jsx)(`h4`,{className:`text-2xl font-black text-emerald-900 tracking-wider`,children:`L U L U S`}),
-          (0,L.jsxs)(`p`,{className:`text-xs text-emerald-800`,children:[`Dengan Nilai Rata-Rata Kumulatif Ijazah: `,(0,L.jsx)(`strong`,{className:`font-mono text-sm`,children:g.sklAverage||g.averageScore}),` (Predikat: `,v(g.sklAverage||g.averageScore).label,`)`]})
+          (0,L.jsx)(`h4`,{className:`text-2xl font-black text-emerald-900 tracking-wider`,children:g.sklAverage!==null?(g.sklAverage>=75?`L U L U S`:`BELUM TUNTAS`):`MENUNGGU NILAI UM`}),
+          (0,L.jsxs)(`p`,{className:`text-xs text-emerald-800`,children:[`Dengan Nilai Rata-Rata Kumulatif Ijazah: `,(0,L.jsx)(`strong`,{className:`font-mono text-sm`,children:g.sklAverage??`-`}),g.sklAverage!==null?` (Predikat: ${v(g.sklAverage).label} • Bobot ${wR}% Rapor + ${wU}% UM)`:` (Nilai UM belum lengkap)`]})
         ]}),
         (0,L.jsx)(`div`,{className:`border border-slate-300 rounded-lg overflow-hidden text-xs`,children:(0,L.jsxs)(`table`,{className:`w-full text-left border-collapse`,children:[
           (0,L.jsx)(`thead`,{className:`bg-slate-100 font-bold border-b border-slate-300 text-slate-800`,children:(0,L.jsxs)(`tr`,{children:[
             (0,L.jsx)(`th`,{className:`p-2 w-10 text-center border-r border-slate-300`,children:`No`}),
             (0,L.jsx)(`th`,{className:`p-2 border-r border-slate-300`,children:`Mata Pelajaran`}),
-            (0,L.jsx)(`th`,{className:`p-2 text-center w-32 border-r border-slate-300`,children:`Rerata Rapor (Sem 1-5)`}),
-            (0,L.jsx)(`th`,{className:`p-2 text-center w-24 border-r border-slate-300`,children:`Nilai UAM`}),
+            (0,L.jsxs)(`th`,{className:`p-2 text-center w-32 border-r border-slate-300`,children:[`Rerata Sem 1–5 (`,wR,`%)`]}),
+            (0,L.jsxs)(`th`,{className:`p-2 text-center w-24 border-r border-slate-300`,children:[`Nilai UM (`,wU,`%)`]}),
             (0,L.jsx)(`th`,{className:`p-2 text-center w-28`,children:`Nilai Akhir Ijazah`})
           ]})}),
           (0,L.jsx)(`tbody`,{className:`divide-y divide-slate-200`,children:Hr.map((sub,idx)=>{
-            let rAvg=g.raporAvg?.[sub.id]||0;
-            let uVal=g.uamSub?.[sub.id]||0;
-            let ijVal=g.ijazahSub?.[sub.id]||0;
+            let rAvg=g.raporAvg?.[sub.id]??null;
+            let uVal=g.uamSub?.[sub.id]??null;
+            let ijVal=g.ijazahSub?.[sub.id]??null;
             return(0,L.jsxs)(`tr`,{className:idx%2===1?`bg-slate-50/40`:`bg-white`,children:[
               (0,L.jsx)(`td`,{className:`p-1.5 text-center font-mono text-slate-500 border-r border-slate-300`,children:idx+1}),
               (0,L.jsx)(`td`,{className:`p-1.5 font-medium text-slate-900 border-r border-slate-300`,children:sub.name}),
-              (0,L.jsx)(`td`,{className:`p-1.5 text-center font-mono border-r border-slate-300`,children:rAvg>0?rAvg:`-`}),
-              (0,L.jsx)(`td`,{className:`p-1.5 text-center font-mono border-r border-slate-300`,children:uVal>0?uVal:`-`}),
-              (0,L.jsx)(`td`,{className:`p-1.5 text-center font-mono font-bold text-emerald-800 bg-emerald-50/30`,children:ijVal>0?ijVal:`-`})
+              (0,L.jsx)(`td`,{className:`p-1.5 text-center font-mono border-r border-slate-300`,children:rAvg!==null?rAvg:`-`}),
+              (0,L.jsx)(`td`,{className:`p-1.5 text-center font-mono border-r border-slate-300`,children:uVal!==null?uVal:`-`}),
+              (0,L.jsx)(`td`,{className:`p-1.5 text-center font-mono font-bold text-emerald-800 bg-emerald-50/30`,children:ijVal!==null?ijVal:`-`})
             ]},sub.id)
           })}),
           (0,L.jsx)(`tfoot`,{children:(0,L.jsxs)(`tr`,{className:`bg-slate-100 font-bold border-t-2 border-slate-400 text-slate-900`,children:[
             (0,L.jsx)(`td`,{colSpan:2,className:`p-2 text-right border-r border-slate-300`,children:`Rata-Rata Akhir Kelulusan:`}),
-            (0,L.jsx)(`td`,{className:`p-2 text-center font-mono border-r border-slate-300`,children:(()=>{let vs=Object.values(g.raporAvg||{}).filter(x=>x>0);return vs.length>0?(vs.reduce((a,b)=>a+b,0)/vs.length).toFixed(1):`-`})()}),
-            (0,L.jsx)(`td`,{className:`p-2 text-center font-mono border-r border-slate-300`,children:(()=>{let vs=Object.values(g.uamSub||{}).filter(x=>x>0);return vs.length>0?(vs.reduce((a,b)=>a+b,0)/vs.length).toFixed(1):`-`})()}),
-            (0,L.jsx)(`td`,{className:`p-2 text-center font-mono text-emerald-900 bg-emerald-100/60`,children:g.sklAverage||`-`})
+            (0,L.jsx)(`td`,{className:`p-2 text-center font-mono border-r border-slate-300`,children:g.globalRaporAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 text-center font-mono border-r border-slate-300`,children:g.globalUmAvg??`-`}),
+            (0,L.jsx)(`td`,{className:`p-2 text-center font-mono text-emerald-900 bg-emerald-100/60`,children:g.sklAverage??`-`})
           ]})})
         ]})}),
         (0,L.jsxs)(`div`,{className:`pt-6 flex justify-between items-end text-xs`,children:[

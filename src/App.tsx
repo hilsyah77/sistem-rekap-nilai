@@ -385,6 +385,8 @@ export function App() {
             currentUser={currentUser}
             tahunAjaran={tahunAjaran}
             schoolProfile={schoolProfile}
+            classes={classes}
+            walikelasAccounts={walikelasAccounts}
             students={students}
             scoresBySemester={scoresBySemester}
           />
